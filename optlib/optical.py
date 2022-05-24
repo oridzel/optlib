@@ -208,7 +208,7 @@ class Material:
 		elif self.oscillators.model == 'MLL':
 			self._epsilon = self.calculateMLLDielectricFunction()
 		else:
-			raise InputError("Invalid model name. The valid model names are: Drude, DrudeLindhard, Mermin and MerminLL")
+			raise InputError("Invalid model name. The valid model names are: Drude, DrudeLindhard, Mermin and MLL")
 
 	def calculateDrudeDielectricFunction(self):
 		self._convert2au()
