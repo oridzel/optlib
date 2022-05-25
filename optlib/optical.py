@@ -175,10 +175,10 @@ class Material:
 	def q(self, q):
 		try: 
 			self.size_q = q.shape[1]
-		except IndexError:
+		except:
 			try:
 				self.size_q = q.shape[0]
-			except IndexError:
+			except:
 				self.size_q = 1
 		finally:
 			self._q = q
