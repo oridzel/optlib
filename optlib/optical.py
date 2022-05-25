@@ -177,7 +177,7 @@ class Material:
 			self.size_q = q.shape[1]
 		except IndexError:
 			self.size_q = q.shape[0]
-		except IndexError:
+		else:
 			self.size_q = 1
 		self._q = q
 
