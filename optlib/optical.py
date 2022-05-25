@@ -176,10 +176,12 @@ class Material:
 		try: 
 			self.size_q = q.shape[1]
 		except IndexError:
-			self.size_q = q.shape[0]
-		else:
-			self.size_q = 1
-		self._q = q
+			try:
+				self.size_q = q.shape[0]
+			except IndexError:
+				self.size_q = 1
+		finally:
+			self._q = q
 
 	@property
 	def epsilon(self):
