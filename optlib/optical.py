@@ -131,7 +131,7 @@ class Material:
 		self.xraypath = xraypath
 		self.e_gap = 0
 		self.e_fermi = 0
-		self.U = 0
+		self.u = 0
 		self.width_of_the_valence_band = None
 		self.atomic_density = None
 		self.static_refractive_index = None
@@ -399,7 +399,7 @@ class Material:
 		return complex(1) + top / bottom
 
 	def calculate_mll_dielectric_function(self):
-		if self.U == 0:
+		if self.u == 0:
 			raise InputError("Please specify the value of U")
 		if self.size_q == 1 and self.q == 0:
 			self.q = 0.01
@@ -410,64 +410,63 @@ class Material:
 			np.zeros((self.eloss.shape[0], self.size_q), dtype=complex))
 
 		for i in range(len(self.oscillators.A)):
-			epsMLL = self._calculate_mll_oscillator(
+			eps_mll = self._calculate_mll_oscillator(
 				self.oscillators.omega[i], self.oscillators.gamma[i])
-			oneovereps += self.oscillators.A[i] * (complex(1) / epsMLL - complex(1))
+			oneovereps += self.oscillators.A[i] * (complex(1) / eps_mll - complex(1))
 		oneovereps += complex(1)
 		epsilon = complex(1) / oneovereps
 		self._convert2ru()
 		return epsilon
 
 	def convert_to_mll(self):
-		currentU = 0.0
-		newsumA = 0.0
+		current_u = 0.0
+		new_sum_A = 0.0
 		stopthis = 0
-		UstepSize = 1.0
+		u_step_size = 1.0
 		counter = 0
-		while (newsumA < 1) and (currentU < 1000):
-			oldsumA = newsumA
-			newsumA = 0.0
-			currentU = currentU + UstepSize
-			print("currentU", currentU, "UstepSize", UstepSize)
-			#print("currentU", currentU)
+		while (new_sum_A < 1) and (current_u < 1000):
+			old_sum_A = new_sum_A
+			new_sum_A = 0.0
+			current_u = current_u + u_step_size
+			print("current_u", current_u, "u_step_size", u_step_size)
 			for i in range(len(self.oscillators.A)):
-				oldA = self.oscillators.A[i]
-				if oldA > 0.0:
+				old_A = self.oscillators.A[i]
+				if old_A > 0.0:
 					old_omega = self.oscillators.omega[i]
-					if old_omega <= currentU:
+					if old_omega <= current_u:
 						stopthis = 1
 						break
-					new_omega = math.sqrt(old_omega**2 - currentU**2)
-					NewA = oldA * (old_omega / new_omega)**2
-					newsumA = newsumA + NewA
-					if newsumA > 1:
+					new_omega = math.sqrt(old_omega**2 - current_u**2)
+					new_A = old_A * (old_omega / new_omega)**2
+					new_sum_A = new_sum_A + new_A
+					if new_sum_A > 1:
 						stopthis = 1
 						break
 
 			if stopthis:
-				currentU = currentU - UstepSize  # go back to previous U value
-				newsumA = oldsumA  # make step size 10 times smaller
-				UstepSize = UstepSize / 10.0
+				current_u = current_u - u_step_size  # go back to previous U value
+				new_sum_A = old_sum_A  # make step size 10 times smaller
+				u_step_size = u_step_size / 10.0
 				stopthis = 0
-				print("newsumA", newsumA)
+				print("new_sum_A", new_sum_A)
 				counter = counter + 1
 				if counter > 100:
 					break
-				if  newsumA > 0.99:
+				if  new_sum_A > 0.99:
 					break
 
 		for i in range(len(self.oscillators.A)):  # now calculate new values for optimum U
-			oldA = self.oscillators.A[i]
-			if oldA > 0.0:
+			old_A = self.oscillators.A[i]
+			if old_A > 0.0:
 				old_omega = self.oscillators.omega[i]
-				if old_omega < currentU:
+				if old_omega < current_u:
 					new_omega = 0.001
 				else:
-					new_omega = math.sqrt(old_omega**2 - currentU**2)
-				NewA = oldA * (old_omega / new_omega)**2
-				self.oscillators.A[i] = NewA
+					new_omega = math.sqrt(old_omega**2 - current_u**2)
+				new_A = old_A * (old_omega / new_omega)**2
+				self.oscillators.A[i] = new_A
 				self.oscillators.omega[i] = new_omega
-		self.U = currentU
+		self.u = current_u
 
 	def _calculate_mll_oscillator(self, omega0, gamma):
 		omega = np.squeeze(np.array([self.eloss, ] * self.size_q).transpose())
@@ -482,7 +481,7 @@ class Material:
 
 	def _eps_llx(self, omega, gamma, omega0):
 		complex_array = np.vectorize(complex)
-		omega_minus_square = complex_array(omega**2 - self.U**2 - gamma**2, 2.0 * omega * gamma)
+		omega_minus_square = complex_array(omega**2 - self.u**2 - gamma**2, 2.0 * omega * gamma)
 		r = np.abs(omega_minus_square)
 		theta = np.arctan2(omega_minus_square.imag, omega_minus_square.real)
 		omega_minus = complex_array(np.sqrt(r) * np.cos(theta / 2.0), np.sqrt(r) * np.sin(theta / 2.0))
@@ -555,8 +554,8 @@ class Material:
 		self.q = self.q*a0
 		if (self.e_gap):
 			self.e_gap = self.e_gap/h2ev
-		if (self.U):
-			self.U = self.U/h2ev
+		if (self.u):
+			self.u = self.u/h2ev
 		if (self.width_of_the_valence_band):
 			self.width_of_the_valence_band = self.width_of_the_valence_band/h2ev
 
@@ -570,8 +569,8 @@ class Material:
 		self.q = self.q/a0
 		if (self.e_gap):
 			self.e_gap = self.e_gap*h2ev
-		if (self.U):
-			self.U = self.U*h2ev
+		if (self.u):
+			self.u = self.u*h2ev
 		if (self.width_of_the_valence_band):
 			self.width_of_the_valence_band = self.width_of_the_valence_band*h2ev
 
@@ -901,12 +900,12 @@ class Material:
 		old_e0 = e0
 
 		if (self.e_gap > 0):
-			if e0 > self.e_gap:
+			if e0 > self.e_gap + self.width_of_the_valence_band:
 				e0 -= self.e_gap
 			else:
-				raise InputError("Please specify the value of energy greater than the band gap")
+				raise InputError("Please specify the value of energy greater than the band gap + the width of the valence band")
 			if old_e0 <= 100 + self.width_of_the_valence_band:
-				eloss = linspace(self.e_gap, e0 - self.width_of_the_valence_band, de)
+				eloss = linspace(self.e_gap, e0 - self.width_of_the_valence_band, 0.1)
 			elif old_e0 <= 1000 + self.width_of_the_valence_band:
 				range_1 = linspace(self.e_gap, 100, de)
 				range_2 = linspace(101, e0 - self.width_of_the_valence_band, 1)
@@ -990,6 +989,32 @@ class Material:
 		self.imfp_e = energy
 
 
+	def calculate_phonon_imfp(self, energy, eps_zero, e1, e2):
+		T = 300.0 # K
+		k_B = 8.617e-5 # eV/K
+		eps_inf = self.static_refractive_index**2
+		imfp_phonon = []
+		for loss in [e1, e2]:
+			imfp_plus = []
+			imfp_minus = []
+			for e in energy:
+				N_lo = 1.0/(np.exp(loss/(k_B*T))-1.0) # no need to convert to a.u.
+
+				# //=========== phonon creation ===============
+				ln_plus = (1.0 + np.sqrt(np.abs(1.0 - loss/e))) / (1.0 - np.sqrt(np.abs(1.0 - loss/e)))
+				term_plus = (N_lo + 1.0)*(1.0/eps_inf - 1.0/eps_zero)*loss/(2.0*e)
+				imfp_plus.append(1.0/a0*term_plus*np.log(ln_plus))
+
+				# //=========== phonon annihilation ============
+				ln_minus = (1.0 + np.sqrt(np.abs(1.0 + loss/e))) / (-1.0 + np.sqrt(np.abs(1.0 + loss/e)))
+				term_minus = N_lo*(1.0/eps_inf - 1.0/eps_zero)*loss/(2.0*e)
+				imfp_minus.append(1.0/a0*term_minus*np.log(ln_minus))
+
+			imfp_phonon.append(1/(np.array(imfp_minus) + np.array(imfp_plus)))
+
+		self.imfp_phonon = 1/(1/np.array(imfp_phonon[0]) + 1/np.array(imfp_phonon[1]))
+
+
 	def _get_sigma(self, lines, line, pattern):
 		start = lines[line].find(pattern) + len(pattern)
 		end = lines[line].find(' cm**2')
@@ -1022,7 +1047,10 @@ class Material:
 		x = subprocess.run('/Users/olgaridzel/Research/ESCal/src/MaterialDatabase/Data/Elsepa/elsepa-2020/elsepa-2020 < lub.in',shell=True,capture_output=True)
 
 		with open('dcs_' + '{:1.3e}'.format(round(self.e0)).replace('.','p').replace('+0','0') + '.dat','r') as fd:
-			self.sigma_el = self._get_sigma(fd.readlines(), 32, 'Total elastic cross section = ')
+			if e0 < 100:
+				self.sigma_el = self._get_sigma(fd.readlines(), 35, 'Total elastic cross section = ')
+			else:
+				self.sigma_el = self._get_sigma(fd.readlines(), 32, 'Total elastic cross section = ')
 			self.emfp = 1/(self.sigma_el*self.atomic_density)
 			# sigma_tr_1 = get_sigma(lines, 33, '1st transport cross section = ')
 			# sigma_tr_2 = get_sigma(lines, 34, '2nd transport cross section = ')
@@ -1575,7 +1603,7 @@ class OptFit:
 
 	def struct2vec(self, osc_struct):
 		if osc_struct.oscillators.model == 'MLL':
-			vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.U )
+			vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.u )
 		elif self.material.oscillators.model == 'Mermin':
 			vec = np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega))
 		else:
@@ -1593,7 +1621,7 @@ class OptFit:
 		material.oscillators.omega = oscillators[2]
 
 		if self.material.oscillators.model == 'MLL':
-			material.U = osc_vec[-1]
+			material.u = osc_vec[-1]
 		elif self.material.oscillators.model != 'Mermin':
 			material.oscillators.alpha = osc_vec[-1]
 			
