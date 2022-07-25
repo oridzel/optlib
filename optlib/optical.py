@@ -993,26 +993,28 @@ class Material:
 		T = 300.0 # K
 		k_B = 8.617e-5 # eV/K
 		eps_inf = self.static_refractive_index**2
-		imfp_phonon = []
+		iimfp_phonon = []
 		for loss in [e1, e2]:
-			imfp_plus = []
-			imfp_minus = []
+			loss /= h2ev
+			iimfp_plus = []
+			iimfp_minus = []
 			for e in energy:
-				N_lo = 1.0/(np.exp(loss/(k_B*T))-1.0) # no need to convert to a.u.
+				e /= h2ev
+				N_lo = 1.0/(np.exp(loss/(k_B*T/h2ev))-1.0) # no need to convert to a.u.
 
 				# //=========== phonon creation ===============
 				ln_plus = (1.0 + np.sqrt(np.abs(1.0 - loss/e))) / (1.0 - np.sqrt(np.abs(1.0 - loss/e)))
 				term_plus = (N_lo + 1.0)*(1.0/eps_inf - 1.0/eps_zero)*loss/(2.0*e)
-				imfp_plus.append(1.0/a0*term_plus*np.log(ln_plus))
+				iimfp_plus.append(term_plus*np.log(ln_plus))
 
 				# //=========== phonon annihilation ============
 				ln_minus = (1.0 + np.sqrt(np.abs(1.0 + loss/e))) / (-1.0 + np.sqrt(np.abs(1.0 + loss/e)))
 				term_minus = N_lo*(1.0/eps_inf - 1.0/eps_zero)*loss/(2.0*e)
-				imfp_minus.append(1.0/a0*term_minus*np.log(ln_minus))
+				iimfp_minus.append(term_minus*np.log(ln_minus))
 
-			imfp_phonon.append(1/(np.array(imfp_minus) + np.array(imfp_plus)))
+			iimfp_phonon.append(np.array(iimfp_minus) + np.array(iimfp_plus))
 
-		self.imfp_phonon = 1/(1/np.array(imfp_phonon[0]) + 1/np.array(imfp_phonon[1]))
+		self.imfp_phonon = 1/(np.array(iimfp_phonon[0]) + np.array(iimfp_phonon[1]))*a0
 
 
 	def _get_sigma(self, lines, line, pattern):
