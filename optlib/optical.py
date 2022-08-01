@@ -916,17 +916,20 @@ class Material:
 				range_3 = linspace(1100, e0 - self.width_of_the_valence_band, 100)
 				eloss = np.concatenate((range_1, range_2, range_3))
 		else:
-			if e0 <= 100 + self.e_fermi:
-				eloss = linspace(1e-5, e0 - self.e_fermi, de)
-			elif e0 <= 1000 + self.e_fermi:
-				range_1 = linspace(1e-5, 100, de)
-				range_2 = linspace(101, e0 - self.e_fermi, 1)
-				eloss = np.concatenate((range_1, range_2))
+			if e0 > self.e_fermi:
+				if e0 <= 100 + self.e_fermi:
+					eloss = linspace(1e-5, e0 - self.e_fermi, de)
+				elif e0 <= 1000 + self.e_fermi:
+					range_1 = linspace(1e-5, 100, de)
+					range_2 = linspace(101, e0 - self.e_fermi, 1)
+					eloss = np.concatenate((range_1, range_2))
+				else:
+					range_1 = linspace(1e-5, 100, de)
+					range_2 = linspace(110, 1000, 1)
+					range_3 = linspace(1100, e0 - self.e_fermi, 100)
+					eloss = np.concatenate((range_1, range_2, range_3))
 			else:
-				range_1 = linspace(1e-5, 100, de)
-				range_2 = linspace(110, 1000, 1)
-				range_3 = linspace(1100, e0 - self.e_fermi, 100)
-				eloss = np.concatenate((range_1, range_2, range_3))
+				raise InputError("Please specify the value of energy greater than the Fermin energy")
 
 		self.eloss = eloss
 
@@ -978,12 +981,9 @@ class Material:
 			raise InputError("Please specify the values of the band gap e_gap and the width of the valence band width_of_the_valence_band")
 		imfp = np.zeros_like(energy)
 		for i in range(energy.shape[0]):
-			if not is_metal and energy[i] <= self.e_gap + self.width_of_the_valence_band:
-				imfp[i] = np.Inf
-			else:
-				self.calculate_diimfp(energy[i], 9, normalised = False)
-				# imfp[i] = 1/np.trapz(self.diimfp, self.diimfp_e)
-				imfp[i] = 1/np.trapz(self.iimfp, self.diimfp_e/h2ev)
+			self.calculate_diimfp(energy[i], 9, normalised = False)
+			# imfp[i] = 1/np.trapz(self.diimfp, self.diimfp_e)
+			imfp[i] = 1/np.trapz(self.iimfp, self.diimfp_e/h2ev)
 		self.imfp = imfp*a0
 		self.imfp_e = energy
 
