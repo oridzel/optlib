@@ -904,30 +904,29 @@ class Material:
 				e0 -= self.e_gap
 			else:
 				raise InputError("Please specify the value of energy greater than the band gap + the width of the valence band")
-			if old_e0 <= 100 + self.width_of_the_valence_band:
-				eloss = linspace(self.e_gap, e0 - self.width_of_the_valence_band, 0.1)
-			elif old_e0 <= 1000 + self.width_of_the_valence_band:
+			if e0 <= 100 + self.width_of_the_valence_band:
+				eloss = linspace(self.e_gap, e0 - self.width_of_the_valence_band, de)
+			elif e0 <= 1000 + self.width_of_the_valence_band:
 				range_1 = linspace(self.e_gap, 100, de)
 				range_2 = linspace(101, e0 - self.width_of_the_valence_band, 1)
 				eloss = np.concatenate((range_1, range_2))
 			else:
 				range_1 = linspace(self.e_gap, 100, de)
-				range_2 = linspace(110, 500, 10)
-				range_3 = linspace(600, e0 - self.width_of_the_valence_band, 100)
+				range_2 = linspace(110, 1000, 1)
+				range_3 = linspace(1100, e0 - self.width_of_the_valence_band, 100)
 				eloss = np.concatenate((range_1, range_2, range_3))
 		else:
-			if old_e0 <= 100 + self.e_fermi:
+			if e0 <= 100 + self.e_fermi:
 				eloss = linspace(1e-5, e0 - self.e_fermi, de)
-			elif old_e0 <= 1000 + self.e_fermi:
+			elif e0 <= 1000 + self.e_fermi:
 				range_1 = linspace(1e-5, 100, de)
 				range_2 = linspace(101, e0 - self.e_fermi, 1)
 				eloss = np.concatenate((range_1, range_2))
 			else:
 				range_1 = linspace(1e-5, 100, de)
-				range_2 = linspace(110, 500, 10)
-				range_3 = linspace(600, e0 - self.e_fermi, 100)
+				range_2 = linspace(110, 1000, 1)
+				range_3 = linspace(1100, e0 - self.e_fermi, 100)
 				eloss = np.concatenate((range_1, range_2, range_3))
-				# eloss = linspace(1e-5, e0 - self.e_fermi, de)
 
 		self.eloss = eloss
 
@@ -944,17 +943,17 @@ class Material:
 			iimfp = rel_coef * 1/(math.pi*(e0/h2ev)) * interp_elf * int_limits
 			diimfp = iimfp / (h2ev * a0)
 		else:
-			q_minus = np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) - np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
-			q_plus =  np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) + np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
+			q_minus = np.sqrt( e0/h2ev * ( 2 + e0/h2ev/(c**2) ) ) - np.sqrt( ( e0/h2ev - self.eloss/h2ev ) * ( 2 + (e0/h2ev - self.eloss/h2ev)/(c**2) ) )
+			q_plus =  np.sqrt( e0/h2ev * ( 2 + e0/h2ev/(c**2) ) ) + np.sqrt( ( e0/h2ev - self.eloss/h2ev ) * ( 2 + (e0/h2ev - self.eloss/h2ev)/(c**2) ) )
 			q = np.linspace(q_minus, q_plus, 2**(nq - 1), axis = 1)
 			if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
 				q[q == 0] = 0.01
 			self.q = q / a0
 			self.calculate_elf()
 			integrand = self.elf / q
-			integrand[q == 0] = 0
+			integrand[q == 0] = 1e-5
 			if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
-				integrand[q == 0.01] = 0
+				integrand[q == 0.01] = 1e-5
 			iimfp = rel_coef * 1/(math.pi * (e0/h2ev)) * np.trapz( integrand, q, axis = 1 )
 			diimfp = iimfp / (h2ev * a0)
 
