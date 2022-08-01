@@ -584,6 +584,7 @@ class Material:
 
 	def evaluate_kk_sum(self):
 		old_q = self.q
+		self.eloss[self.eloss < 1e-5] = 1e-5
 		self.q = 0
 		if (self.oscillators.model == 'MLL'):
 			self.q = 0.01
