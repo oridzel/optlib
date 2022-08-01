@@ -9,3 +9,7 @@ $ cd optlib
 $ pip install -r requirements.txt
 $ python setup.py install
 ```
+or
+```
+pip install git+https://github.com/oridzel/optlib.git
+```
