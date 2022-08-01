@@ -974,15 +974,14 @@ class Material:
 		self.e0 = old_e0
 
 
-	def calculate_imfp(self, energy, is_metal = True):
+	def calculate_imfp(self, energy, de=0.5, is_metal = True):
 		if is_metal and self.e_fermi == 0:
 			raise InputError("Please specify the value of the Fermi energy e_fermi")
 		elif not is_metal and self.e_gap == 0 and self.width_of_the_valence_band == 0:
 			raise InputError("Please specify the values of the band gap e_gap and the width of the valence band width_of_the_valence_band")
 		imfp = np.zeros_like(energy)
 		for i in range(energy.shape[0]):
-			self.calculate_diimfp(energy[i], 9, normalised = False)
-			# imfp[i] = 1/np.trapz(self.diimfp, self.diimfp_e)
+			self.calculate_diimfp(energy[i], de, 10, normalised = False)
 			imfp[i] = 1/np.trapz(self.iimfp, self.diimfp_e/h2ev)
 		self.imfp = imfp*a0
 		self.imfp_e = energy
