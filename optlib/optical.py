@@ -340,7 +340,7 @@ class Material:
 		chi = np.sqrt(1.0 / (math.pi * v_f))
 		
 		z1_1 = omega / (self.q * v_f)
-		z1_1[np.isnan(z1_1)] = machine_eps
+		z1_1[np.isnan(z1_1)] = 1e-5
 		
 		gq = np.zeros_like(self.q)
 		gq = gamma / (self.q * v_f)
@@ -938,9 +938,9 @@ class Material:
 			q_plus =  np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) + np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
 			self.extend_to_henke()
 			int_limits = np.log(q_plus/q_minus)
-			int_limits[np.isinf(int_limits)] = machine_eps
+			int_limits[np.isinf(int_limits)] = 1e-5
 			interp_elf = np.interp(eloss, self.eloss_extended_to_henke, self.elf_extended_to_henke)
-			interp_elf[np.isnan(interp_elf)] = machine_eps
+			interp_elf[np.isnan(interp_elf)] = 1e-5
 			iimfp = rel_coef * 1/(math.pi*(e0/h2ev)) * interp_elf * int_limits
 			diimfp = iimfp / (h2ev * a0)
 		else:
