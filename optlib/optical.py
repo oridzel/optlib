@@ -1473,11 +1473,11 @@ class OptFit:
 				print(f"Electron density = {self.material.electron_density_henke / a0 ** 3}")
 				opt.add_inequality_constraint(self.constraint_function_henke)
 				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
-					opt.add_inequality_constraint(self.constraint_function_re_fermiind_henke)
+					opt.add_inequality_constraint(self.constraint_function_refind_henke)
 			else:
 				opt.add_inequality_constraint(self.constraint_function)
 				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
-					opt.add_inequality_constraint(self.constraint_function_re_fermiind)
+					opt.add_inequality_constraint(self.constraint_function_refind_henked)
 
 			opt.set_maxeval(maxeval)
 			opt.set_xtol_rel(xtol_rel)
@@ -1510,11 +1510,11 @@ class OptFit:
 				print(f"Electron density = {self.material.electron_density_henke / a0 ** 3}")
 				opt.add_inequality_constraint(self.constraint_function_henke)
 				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
-					opt.add_inequality_constraint(self.constraint_function_re_fermiind_henke)
+					opt.add_inequality_constraint(self.constraint_function_refind_henke)
 			else:
 				opt.add_inequality_constraint(self.constraint_function)
 				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
-					opt.add_inequality_constraint(self.constraint_function_re_fermiind)
+					opt.add_inequality_constraint(self.constraint_function_refind_henke)
 
 			x = opt.optimize(self.struct2vec(self.material))
 			self.bar.close()
@@ -1553,11 +1553,11 @@ class OptFit:
 				print(f"Electron density = {self.material.electron_density_henke / a0 ** 3}")
 				opt.add_inequality_constraint(self.constraint_function_henke)
 				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
-					opt.add_inequality_constraint(self.constraint_function_re_fermiind_henke)
+					opt.add_inequality_constraint(self.constraint_function_refind_henke)
 			else:
 				opt.add_inequality_constraint(self.constraint_function)
 				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
-					opt.add_inequality_constraint(self.constraint_function_re_fermiind)
+					opt.add_inequality_constraint(self.constraint_function_refind_henke)
 
 			opt.set_maxeval(maxeval)
 			opt.set_xtol_rel(xtol_rel)
@@ -1587,11 +1587,11 @@ class OptFit:
 				print(f"Electron density = {self.material.electron_density_henke / a0 ** 3}")
 				opt.add_inequality_constraint(self.constraint_function_henke)
 				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
-					opt.add_inequality_constraint(self.constraint_function_re_fermiind_henke)
+					opt.add_inequality_constraint(self.constraint_function_refind_henke)
 			else:
 				opt.add_inequality_constraint(self.constraint_function)
 				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
-					opt.add_inequality_constraint(self.constraint_function_re_fermiind)
+					opt.add_inequality_constraint(self.constraint_function_refind_henke)
 
 			self.material.calculate_elastic_properties(self.e0)
 			self.material.calculateLegendreCoefficients(200)
