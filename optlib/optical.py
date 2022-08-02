@@ -1650,7 +1650,6 @@ class OptFit:
 			grad = np.array([0, 0.5/chi_squared])
 
 		self.bar.update(1)
-		time.sleep(1)
 		return chi_squared
 
 	def objective_function_ndiimfp(self, osc_vec, grad):
@@ -1664,7 +1663,6 @@ class OptFit:
 			grad = np.array([0, 0.5/chi_squared])
 
 		self.bar.update(1)
-		# time.sleep(1)
 		return chi_squared
 
 	def objective_function_elf(self, osc_vec, grad):
@@ -1678,7 +1676,6 @@ class OptFit:
 			grad = np.array([0, 0.5/chi_squared])
 
 		self.bar.update(1)
-		time.sleep(1)
 		return chi_squared
 
 	def objective_function(self, osc_vec, grad):
@@ -1701,7 +1698,6 @@ class OptFit:
 			grad = np.array([0, 0.5/chi_squared])
 
 		self.bar.update(1)
-		time.sleep(1)
 		return chi_squared
 
 	def constraint_function(self, osc_vec, grad):
