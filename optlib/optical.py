@@ -900,20 +900,18 @@ class Material:
 		old_e0 = e0
 
 		if (self.e_gap > 0):
-			if e0 > self.e_gap + self.width_of_the_valence_band:
-				e0 -= self.e_gap
-			else:
-				raise InputError("Please specify the value of energy greater than the band gap + the width of the valence band")
-			if e0 <= 100 + self.width_of_the_valence_band:
-				eloss = linspace(self.e_gap, e0 - self.width_of_the_valence_band, de)
-			elif e0 <= 1000 + self.width_of_the_valence_band:
+			if e0 < 2*self.e_gap + self.width_of_the_valence_band:
+				raise InputError("Please specify the value of energy greater than the 2*band gap + the width of the valence band")
+			if e0 <= 100 + 2*self.e_gap + self.width_of_the_valence_band:
+				eloss = linspace(self.e_gap, e0 - self.e_gap - self.width_of_the_valence_band, de)
+			elif e0 <= 1000 + 2*self.e_gap + self.width_of_the_valence_band:
 				range_1 = linspace(self.e_gap, 100, de)
-				range_2 = linspace(101, e0 - self.width_of_the_valence_band, 1)
+				range_2 = linspace(101, e0 - self.e_gap - self.width_of_the_valence_band, 1)
 				eloss = np.concatenate((range_1, range_2))
 			else:
 				range_1 = linspace(self.e_gap, 100, de)
 				range_2 = linspace(110, 1000, 1)
-				range_3 = linspace(1100, e0 - self.width_of_the_valence_band, 100)
+				range_3 = linspace(1100, e0 - self.e_gap - self.width_of_the_valence_band, 100)
 				eloss = np.concatenate((range_1, range_2, range_3))
 		else:
 			if e0 > self.e_fermi:
@@ -933,6 +931,7 @@ class Material:
 
 		self.eloss = eloss
 
+		e0 -= self.e_gap
 		rel_coef = ((1 + (e0/h2ev)/(c**2))**2) / (1 + (e0/h2ev)/(2*c**2))
 
 		if self.oscillators.alpha == 0 and self.oscillators.model != 'Mermin' and self.oscillators.model != 'MLL' and self.q_dependency is None:
@@ -981,8 +980,11 @@ class Material:
 			raise InputError("Please specify the values of the band gap e_gap and the width of the valence band width_of_the_valence_band")
 		imfp = np.zeros_like(energy)
 		for i in range(energy.shape[0]):
-			self.calculate_diimfp(energy[i], de, nq, normalised = False)
-			imfp[i] = 1/np.trapz(self.iimfp, self.diimfp_e/h2ev)
+			if energy[i] <= self.e_gap*2 + self.width_of_the_valence_band:
+				imfp[i] = np.inf
+			else:
+				self.calculate_diimfp(energy[i], de, nq, normalised = False)
+				imfp[i] = 1/np.trapz(self.iimfp, self.diimfp_e/h2ev)
 		self.imfp = imfp*a0
 		self.imfp_e = energy
 
@@ -1687,8 +1689,10 @@ class OptFit:
 		ind_ndiimfp = self.exp_data.y_ndiimfp >= 0
 		ind_elf = self.exp_data.y_elf >= 0
 
-		chi_squared = self.diimfp_coef*np.sqrt(np.sum((self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])**2 / len(self.exp_data.y_ndiimfp[ind_ndiimfp]))) + \
-						self.elf_coef*np.sqrt(np.sum((self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])**2) / len(self.exp_data.y_elf[ind_elf]))
+		# chi_squared = self.diimfp_coef*np.sqrt(np.sum((self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])**2 / len(self.exp_data.y_ndiimfp[ind_ndiimfp]))) + \
+		# 				self.elf_coef*np.sqrt(np.sum((self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])**2) / len(self.exp_data.y_elf[ind_elf]))
+		chi_squared = self.diimfp_coef*np.sqrt(np.sum(((self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])/diimfp_interp[ind_ndiimfp])**2 / len(self.exp_data.y_ndiimfp[ind_ndiimfp]))) + \
+						self.elf_coef*np.sqrt(np.sum(((self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])/elf_interp[ind_elf])**2) / len(self.exp_data.y_elf[ind_elf]))
 
 		if grad.size > 0:
 			grad = np.array([0, 0.5/chi_squared])
