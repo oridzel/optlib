@@ -577,7 +577,8 @@ class Material:
 		old_q = self.q
 		self.q = 0
 		self.extend_to_henke()
-		fsum = 1 / (2 * math.pi**2 * (self.atomic_density * a0**3)) * np.trapz(self.eloss_extended_to_henke/h2ev * self.elf_extended_to_henke, self.eloss_extended_to_henke/h2ev)
+		ind = self.eloss_extended_to_henke >= self.e_gap
+		fsum = 1 / (2 * math.pi**2 * (self.atomic_density * a0**3)) * np.trapz(self.eloss_extended_to_henke[ind]/h2ev * self.elf_extended_to_henke[ind], self.eloss_extended_to_henke[ind]/h2ev)
 		self.q = old_q
 		return fsum
 
