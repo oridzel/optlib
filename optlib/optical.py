@@ -1473,11 +1473,11 @@ class OptFit:
 					self.material.eloss_henke, self.material.elf_henke = self.material.mopt()
 				self.material.electron_density_henke = self.material.atomic_density * self.material.Z * a0 ** 3 - \
 					1 / (2 * math.pi**2) * np.trapz(self.material.eloss_henke / h2ev * self.material.elf_henke, self.material.eloss_henke / h2ev)
-				opt.add_inequality_constraint(self.constraint_function_henke)
+				# opt.add_inequality_constraint(self.constraint_function_henke)
 				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
 					opt.add_inequality_constraint(self.constraint_function_refind_henke)
 			else:
-				opt.add_inequality_constraint(self.constraint_function)
+				# opt.add_inequality_constraint(self.constraint_function)
 				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
 					opt.add_inequality_constraint(self.constraint_function_refind_henked)
 
@@ -1509,11 +1509,11 @@ class OptFit:
 					self.material.eloss_henke, self.material.elf_henke = self.material.mopt()
 				self.material.electron_density_henke = self.material.atomic_density * self.material.Z * a0 ** 3 - \
 					1 / (2 * math.pi**2) * np.trapz(self.material.eloss_henke / h2ev * self.material.elf_henke, self.material.eloss_henke / h2ev)
-				opt.add_inequality_constraint(self.constraint_function_henke)
+				# opt.add_inequality_constraint(self.constraint_function_henke)
 				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
 					opt.add_inequality_constraint(self.constraint_function_refind_henke)
 			else:
-				opt.add_inequality_constraint(self.constraint_function)
+				# opt.add_inequality_constraint(self.constraint_function)
 				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
 					opt.add_inequality_constraint(self.constraint_function_refind)
 
