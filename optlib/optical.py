@@ -1514,8 +1514,11 @@ class OptFit:
 					opt.add_inequality_constraint(self.constraint_function_refind_henke)
 			else:
 				opt.add_inequality_constraint(self.constraint_function)
-				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
-					opt.add_inequality_constraint(self.constraint_function_refind)
+				if self.material.use_kk_constraint:
+					if self.material.oscillators.model == 'Drude':
+						opt.add_inequality_constraint(self.constraint_function_kk)
+					else:
+						opt.add_inequality_constraint(self.constraint_function_refind)
 
 			x = opt.optimize(self.struct2vec(self.material))
 			self.bar.close()
@@ -1708,6 +1711,18 @@ class OptFit:
 			cf = material.electron_density * wpc / np.sum(material.oscillators.A)
 		else:
 			cf = (1 - 1 / material.static_refractive_index ** 2) / np.sum(material.oscillators.A)
+		val = np.fabs(cf - 1)
+
+		if grad.size > 0:
+			grad = np.array([0, 0.5 / val])
+
+		return val
+	
+	def constraint_function_kk(self, osc_vec, grad):
+		material = self.vec2struct(osc_vec)
+		material._convert2au()
+		cf = ( material.static_refractive_index**2 - material.oscillators.eps_b ) / np.sum(material.oscillators.A/material.oscillators.omega ** 2)
+		print(cf)
 		val = np.fabs(cf - 1)
 
 		if grad.size > 0:
