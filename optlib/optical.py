@@ -1510,7 +1510,9 @@ class OptFit:
 				self.material.electron_density_henke = self.material.atomic_density * self.material.Z * a0 ** 3 - \
 					1 / (2 * math.pi**2) * np.trapz(self.material.eloss_henke / h2ev * self.material.elf_henke, self.material.eloss_henke / h2ev)
 				opt.add_inequality_constraint(self.constraint_function_henke)
-				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
+				if self.material.oscillators.model == 'Drude':
+					opt.add_inequality_constraint(self.constraint_function_kk)
+				else:
 					opt.add_inequality_constraint(self.constraint_function_refind_henke)
 			else:
 				opt.add_inequality_constraint(self.constraint_function)
@@ -1686,17 +1688,15 @@ class OptFit:
 		material.calculate_diimfp(self.e0, self.de, self.n_q)
 		diimfp_interp = np.interp(self.exp_data.x_ndiimfp, material.diimfp_e, material.diimfp)
 
-		if material.oscillators.alpha == 0:
-			elf_interp = np.interp(self.exp_data.x_elf, material.eloss_extended_to_henke, material.elf_extended_to_henke)
-		else:
-			elf_interp = np.interp(self.exp_data.x_elf, material.diimfp_e, material.elf[:,0])
+		material.calculate_elf()
+		elf_interp = np.interp(self.exp_data.x_elf, material.eloss, material.elf)
 		ind_ndiimfp = self.exp_data.y_ndiimfp >= 0
 		ind_elf = self.exp_data.y_elf >= 0
 
-		# chi_squared = self.diimfp_coef*np.sqrt(np.sum((self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])**2 / len(self.exp_data.y_ndiimfp[ind_ndiimfp]))) + \
-		# 				self.elf_coef*np.sqrt(np.sum((self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])**2) / len(self.exp_data.y_elf[ind_elf]))
-		chi_squared = self.diimfp_coef*np.sqrt(np.sum(((self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])/diimfp_interp[ind_ndiimfp])**2 / len(self.exp_data.y_ndiimfp[ind_ndiimfp]))) + \
-						self.elf_coef*np.sqrt(np.sum(((self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])/elf_interp[ind_elf])**2) / len(self.exp_data.y_elf[ind_elf]))
+		chi_squared = self.diimfp_coef*np.sqrt(np.sum((self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])**2 / len(self.exp_data.y_ndiimfp[ind_ndiimfp]))) + \
+						self.elf_coef*np.sqrt(np.sum((self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])**2) / len(self.exp_data.y_elf[ind_elf]))
+		# chi_squared = self.diimfp_coef*np.sqrt(np.sum(((self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])/diimfp_interp[ind_ndiimfp])**2 / len(self.exp_data.y_ndiimfp[ind_ndiimfp]))) + \
+		# 				self.elf_coef*np.sqrt(np.sum(((self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])/elf_interp[ind_elf])**2) / len(self.exp_data.y_elf[ind_elf]))
 
 		if grad.size > 0:
 			grad = np.array([0, 0.5/chi_squared])
@@ -1722,7 +1722,6 @@ class OptFit:
 		material = self.vec2struct(osc_vec)
 		material._convert2au()
 		cf = ( material.static_refractive_index**2 - material.oscillators.eps_b ) / np.sum(material.oscillators.A/material.oscillators.omega ** 2)
-		print(cf)
 		val = np.fabs(cf - 1)
 
 		if grad.size > 0:
