@@ -1463,7 +1463,12 @@ class OptFit:
 
 			opt = nlopt.opt(nlopt.AUGLAG, len(self.struct2vec(self.material)))
 			opt.set_local_optimizer(opt_local)
-			opt.set_min_objective(self.objective_function)
+			if diimfp_coef == 0:
+				opt.set_min_objective(self.objective_function_elf)
+			elif elf_coef == 0:
+				opt.set_min_objective(self.objective_function_ndiimfp)
+			else:
+				opt.set_min_objective(self.objective_function)
 			self.set_bounds()
 			opt.set_lower_bounds(self.lb)
 			opt.set_upper_bounds(self.ub)
@@ -1474,12 +1479,17 @@ class OptFit:
 				self.material.electron_density_henke = self.material.atomic_density * self.material.Z * a0 ** 3 - \
 					1 / (2 * math.pi**2) * np.trapz(self.material.eloss_henke / h2ev * self.material.elf_henke, self.material.eloss_henke / h2ev)
 				opt.add_inequality_constraint(self.constraint_function_henke)
-				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
+				if self.material.oscillators.model == 'Drude':
+					opt.add_inequality_constraint(self.constraint_function_kk)
+				else:
 					opt.add_inequality_constraint(self.constraint_function_refind_henke)
 			else:
 				opt.add_inequality_constraint(self.constraint_function)
-				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
-					opt.add_inequality_constraint(self.constraint_function_refind_henked)
+				if self.material.use_kk_constraint:
+					if self.material.oscillators.model == 'Drude':
+						opt.add_inequality_constraint(self.constraint_function_kk)
+					else:
+						opt.add_inequality_constraint(self.constraint_function_refind)
 
 			opt.set_maxeval(maxeval)
 			opt.set_xtol_rel(xtol_rel)
