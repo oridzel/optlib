@@ -185,11 +185,13 @@ class Material:
 
 	def kramers_kronig(self, epsilon_imag):
 		eps_real = np.zeros_like(self.eloss)
+		print(self.eloss.shape)
+		print(epsilon_imag.shape)
 		for i in range(self.eloss.size):
 			omega = self.eloss[i]
 			ind = np.all([self.eloss != omega, self.eloss > self.e_gap], axis=0)
 			if len(epsilon_imag.shape) > 1:
-				kk_sum = np.trapz(self.eloss[ind] * epsilon_imag[ind][0] / (self.eloss[ind] ** 2 - omega ** 2), self.eloss[ind])
+				kk_sum = np.trapz(self.eloss[ind] * epsilon_imag[ind,0] / (self.eloss[ind] ** 2 - omega ** 2), self.eloss[ind])
 			else:
 				kk_sum = np.trapz(self.eloss[ind] * epsilon_imag[ind] / (self.eloss[ind] ** 2 - omega ** 2), self.eloss[ind])
 			eps_real[i] = 2 * kk_sum / math.pi + 1
@@ -239,8 +241,17 @@ class Material:
 		w_at_q = omega0 + 0.5 * alpha * self.q**2
 		if self.size_q == 1:
 			omega = np.squeeze(np.array([self.eloss, ] * self.size_q).transpose())
+			# if self.q <= np.sqrt(2*self.width_of_the_valence_band):
+			# 	w_at_q = omega0 + alpha * 0.5 * self.q**2
+			# else:
+			# 	w_at_q = omega0 + alpha * self.e_gap + 0.5 * self.q**2
 		else:
 			omega = np.expand_dims(self.eloss, axis=tuple(range(1,self.q.ndim)))
+			# ind_less = self.q <= np.sqrt(2*self.width_of_the_valence_band)
+			# ind_more = self.q > np.sqrt(2*self.width_of_the_valence_band)
+			# w_at_q = np.zeros_like(self.q)
+			# w_at_q[ind_less] = omega0 + alpha * 0.5 * self.q[ind_less]**2
+			# w_at_q[ind_more] = omega0 + alpha * self.e_gap + 0.5 * self.q[ind_more]**2
 
 		mm = omega**2 - w_at_q**2
 		divisor = mm**2 + omega**2 * gamma**2
@@ -281,6 +292,10 @@ class Material:
 			w_at_q = omega0 - self.q_dependency(0)/h2ev + self.q_dependency(self.q / a0)/h2ev
 		else:
 			w_at_q = omega0 + 0.5 * alpha * self.q**2
+			# if self.q <= np.sqrt(2*self.width_of_the_valence_band):
+			# 	w_at_q = omega0 + alpha * 0.5 * self.q**2
+			# else:
+			# 	w_at_q = omega0 + alpha * self.e_gap + 0.5 * self.q**2
 
 		omega = np.squeeze(np.array([self.eloss, ] * self.size_q).transpose())
 
@@ -1439,7 +1454,7 @@ class OptFit:
 			osc_max_U = 10.0
 			self.lb = np.append( np.hstack((osc_min_A,osc_min_gamma,osc_min_omega)), osc_min_U )
 			self.ub = np.append( np.hstack((osc_max_A,osc_max_gamma,osc_max_omega)), osc_max_U )
-		elif self.material.oscillators.model == 'Mermin':
+		elif self.material.oscillators.model == 'Mermin' or self.material.oscillators.model == 'Drude':
 			self.lb = np.hstack((osc_min_A,osc_min_gamma,osc_min_omega))
 			self.ub = np.hstack((osc_max_A,osc_max_gamma,osc_max_omega))
 		else:
@@ -1535,7 +1550,7 @@ class OptFit:
 			x = opt.optimize(self.struct2vec(self.material))
 			self.bar.close()
 			print(f"found minimum after {self.count} evaluations")
-			print("minimum value = ", opt.last_optimum_value())
+			print("minimum value = ", opt.last_optimum_value(), "%")
 			print("result code = ", opt.last_optimize_result())
 
 		return x
@@ -1620,14 +1635,14 @@ class OptFit:
 	def struct2vec(self, osc_struct):
 		if osc_struct.oscillators.model == 'MLL':
 			vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.u )
-		elif self.material.oscillators.model == 'Mermin':
+		elif self.material.oscillators.model == 'Mermin' or self.material.oscillators.model == 'Drude':
 			vec = np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega))
 		else:
 			vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.oscillators.alpha )
 		return vec
 
 	def vec2struct(self, osc_vec):
-		if self.material.oscillators.model == 'Mermin':
+		if self.material.oscillators.model == 'Mermin' or self.material.oscillators.model == 'Drude':
 			oscillators = np.split(osc_vec[:],3)
 		else:
 			oscillators = np.split(osc_vec[0:-1],3)
@@ -1638,7 +1653,7 @@ class OptFit:
 
 		if self.material.oscillators.model == 'MLL':
 			material.u = osc_vec[-1]
-		elif self.material.oscillators.model != 'Mermin':
+		elif self.material.oscillators.model != 'Mermin' and self.material.oscillators.model != 'Drude':
 			material.oscillators.alpha = osc_vec[-1]
 			
 		return material
@@ -1671,26 +1686,30 @@ class OptFit:
 		material = self.vec2struct(osc_vec)
 		material.calculate_diimfp(self.e0, self.de, self.n_q)
 		diimfp_interp = np.interp(self.exp_data.x_ndiimfp, material.diimfp_e, material.diimfp)
-		chi_squared = np.sum((self.exp_data.y_ndiimfp - diimfp_interp)**2 / self.exp_data.x_ndiimfp.size)
+		ind = self.exp_data.y_ndiimfp > 0
+		# chi_squared = np.sum((self.exp_data.y_ndiimfp - diimfp_interp)**2 / self.exp_data.x_ndiimfp.size)
+		rms = 100*np.sqrt(np.sum(((diimfp_interp[ind]-self.exp_data.y_ndiimfp[ind])/self.exp_data.y_ndiimfp[ind])**2) / self.exp_data.x_ndiimfp.size)
 
 		if grad.size > 0:
-			grad = np.array([0, 0.5/chi_squared])
+			grad = np.array([0, 0.5/rms])
 
 		self.bar.update(1)
-		return chi_squared
+		return rms
 
 	def objective_function_elf(self, osc_vec, grad):
 		self.count += 1
 		material = self.vec2struct(osc_vec)
 		material.calculate_elf()
 		elf_interp = np.interp(self.exp_data.x_elf, material.eloss, material.elf)
-		chi_squared = np.sum((self.exp_data.y_elf - elf_interp)**2 / self.exp_data.x_elf.size)
+		ind = self.exp_data.y_elf > 0
+		# chi_squared = np.sum((self.exp_data.y_elf - elf_interp)**2 / self.exp_data.x_elf.size)
+		rms = 100*np.sqrt(np.sum(((elf_interp[ind]-self.exp_data.y_elf[ind])/self.exp_data.y_elf[ind])**2) / self.exp_data.x_elf.size)
 
 		if grad.size > 0:
-			grad = np.array([0, 0.5/chi_squared])
+			grad = np.array([0, 0.5/rms])
 
 		self.bar.update(1)
-		return chi_squared
+		return rms
 
 	def objective_function(self, osc_vec, grad):
 		self.count += 1
@@ -1700,19 +1719,17 @@ class OptFit:
 
 		material.calculate_elf()
 		elf_interp = np.interp(self.exp_data.x_elf, material.eloss, material.elf)
-		ind_ndiimfp = self.exp_data.y_ndiimfp >= 0
-		ind_elf = self.exp_data.y_elf >= 0
+		ind_ndiimfp = self.exp_data.y_ndiimfp > 0
+		ind_elf = self.exp_data.y_elf > 0
 
-		chi_squared = self.diimfp_coef*np.sqrt(np.sum((self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])**2 / len(self.exp_data.y_ndiimfp[ind_ndiimfp]))) + \
-						self.elf_coef*np.sqrt(np.sum((self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])**2) / len(self.exp_data.y_elf[ind_elf]))
-		# chi_squared = self.diimfp_coef*np.sqrt(np.sum(((self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])/diimfp_interp[ind_ndiimfp])**2 / len(self.exp_data.y_ndiimfp[ind_ndiimfp]))) + \
-		# 				self.elf_coef*np.sqrt(np.sum(((self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])/elf_interp[ind_elf])**2) / len(self.exp_data.y_elf[ind_elf]))
-
+		rms = self.diimfp_coef*np.sqrt(np.sum(((self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])/self.exp_data.y_ndiimfp[ind_ndiimfp])**2 / len(self.exp_data.y_ndiimfp[ind_ndiimfp]))) + \
+				self.elf_coef*np.sqrt(np.sum(((self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])/self.exp_data.y_elf[ind_elf])**2) / len(self.exp_data.y_elf[ind_elf]))
+		
 		if grad.size > 0:
-			grad = np.array([0, 0.5/chi_squared])
+			grad = np.array([0, 0.5/rms])
 
 		self.bar.update(1)
-		return chi_squared
+		return rms
 
 	def constraint_function(self, osc_vec, grad):
 		material = self.vec2struct(osc_vec)
