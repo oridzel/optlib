@@ -10,6 +10,7 @@ import os
 from scipy import special, interpolate, sparse, stats, optimize
 import time
 from tqdm import tqdm
+import re
 
 hc = 12.3981756608  # planck constant times velocity of light keV Angstr
 r0 = 2.8179403227e-15
@@ -76,7 +77,7 @@ class InputError(Error):
 
 
 class Composition:
-	def __init__(self, elements, indices):
+	def __init__(self, elements, indices, atomic_numbers):
 		if not check_list_type(elements, str):
 			raise InputError(
 				"The array of elements passed must be of the type string!")
@@ -88,6 +89,7 @@ class Composition:
 				"The number of elements and indices must be the same!")
 		self.elements = elements
 		self.indices = indices
+		self.atomic_numbers = atomic_numbers
 
 
 class Oscillators:
@@ -185,8 +187,6 @@ class Material:
 
 	def kramers_kronig(self, epsilon_imag):
 		eps_real = np.zeros_like(self.eloss)
-		print(self.eloss.shape)
-		print(epsilon_imag.shape)
 		for i in range(self.eloss.size):
 			omega = self.eloss[i]
 			ind = np.all([self.eloss != omega, self.eloss > self.e_gap], axis=0)
@@ -225,7 +225,10 @@ class Material:
 		if self.e_gap > 0:
 			eps_imag[self.eloss <= self.e_gap] = 1e-5
 		if self.use_kk_relation:
-			eps_real = self.kramers_kronig(eps_imag)
+			if len(eps_real.shape) > 1:
+				eps_real[:,0] = self.kramers_kronig(eps_imag)
+			else:
+				eps_real = self.kramers_kronig(eps_imag)
 
 		epsilon.real = eps_real
 		epsilon.imag = eps_imag
@@ -916,18 +919,18 @@ class Material:
 		old_e0 = e0
 
 		if (self.e_gap > 0):
-			if e0 < 2*self.e_gap + self.width_of_the_valence_band:
+			if e0 < self.e_gap:
 				raise InputError("Please specify the value of energy greater than the 2*band gap + the width of the valence band")
-			if e0 <= 100 + 2*self.e_gap + self.width_of_the_valence_band:
-				eloss = linspace(self.e_gap, e0 - self.e_gap - self.width_of_the_valence_band, de)
-			elif e0 <= 1000 + 2*self.e_gap + self.width_of_the_valence_band:
-				range_1 = linspace(self.e_gap, 100, de)
-				range_2 = linspace(101, e0 - self.e_gap - self.width_of_the_valence_band, 1)
+			if e0 <= 100 + self.e_gap:
+				eloss = linspace(0, e0 - self.e_gap, de)
+			elif e0 <= 1000 + self.e_gap:
+				range_1 = linspace(0, 100, de)
+				range_2 = linspace(101, e0 - self.e_gap, 1)
 				eloss = np.concatenate((range_1, range_2))
 			else:
-				range_1 = linspace(self.e_gap, 100, de)
+				range_1 = linspace(0, 100, de)
 				range_2 = linspace(110, 1000, 1)
-				range_3 = linspace(1100, e0 - self.e_gap - self.width_of_the_valence_band, 100)
+				range_3 = linspace(1100, e0 - self.e_gap, 100)
 				eloss = np.concatenate((range_1, range_2, range_3))
 		else:
 			if e0 > self.e_fermi:
@@ -1038,46 +1041,54 @@ class Material:
 		end = lines[line].find(' cm**2')
 		return float(lines[line][start:end])*1e16
 
-	def calculate_elastic_properties(self, e0):
+	def calculate_elastic_properties(self, e0, mnucl,melec,mexch):
 		self.e0 = e0
-		fd = open('lub.in','w+')
+		sumweights = 0.0
 
-		fd.write(f'IZ      {self.Z}         atomic number                               [none]\n')
-		fd.write('MNUCL   3          rho_n (1=P, 2=U, 3=F, 4=Uu)                  [  3]\n')
-		fd.write(f'NELEC   {self.Z}         number of bound electrons                    [ IZ]\n')
-		fd.write('MELEC   3          rho_e (1=TFM, 2=TFD, 3=DHFS, 4=DF, 5=file)   [  4]\n')
-		fd.write('MUFFIN  0          0=free atom, 1=muffin-tin model              [  0]\n')
-		fd.write('RMUF    0          muffin-tin radius (cm)                  [measured]\n')
-		fd.write('IELEC  -1          -1=electron, +1=positron                     [ -1]\n')
-		fd.write('MEXCH   1          V_ex (0=none, 1=FM, 2=TF, 3=RT)              [  1]\n')
-		fd.write('MCPOL   2          V_cp (0=none, 1=B, 2=LDA)                    [  0]\n')
-		fd.write('VPOLA  -1          atomic polarizability (cm^3)            [measured]\n')
-		fd.write('VPOLB  -1          b_pol parameter                          [default]\n')
-		fd.write('MABS    1          W_abs (0=none, 1=LDA-I, 2=LDA-II)            [  0]\n')
-		fd.write('VABSA   2.0        absorption-potential strength, Aabs      [default]\n')
-		fd.write('VABSD  -1.0        energy gap deLTA (eV)                    [default]\n')
-		fd.write('IHe_fermi    2          high-E factorization (0=no, 1=yes, 2=Born)   [  1]\n')
-		fd.write(f'EV      {round(self.e0)}     kinetic energy (eV)                         [none]\n')
+		for i in range(len(self.composition.elements)):
+			sumweights += self.composition.indices[i]
 
-		fd.close()
+			fd = open('lub.in','w+')
 
-		# output = os.system('/Users/olgaridzel/Research/ESCal/src/MaterialDatabase/Data/Elsepa/elsepa-2020/elsepa-2020 < lub.in')
-		x = subprocess.run('/Users/olgaridzel/Research/ESCal/src/MaterialDatabase/Data/Elsepa/elsepa-2020/elsepa-2020 < lub.in',shell=True,capture_output=True)
+			fd.write(f'IZ      {self.composition.atomic_numbers[i]}         atomic number                               [none]\n')
+			fd.write(f'MNUCL   {mnucl}          rho_n (1=P, 2=U, 3=F, 4=Uu)                  [  3]\n')
+			fd.write(f'NELEC   {self.composition.atomic_numbers[i]}         number of bound electrons                    [ IZ]\n')
+			fd.write(f'MELEC   {melec}         rho_e (1=TFM, 2=TFD, 3=DHFS, 4=DF, 5=file)   [  4]\n')
+			# fd.write('MUFFIN  0          0=free atom, 1=muffin-tin model              [  0]\n')
+			# fd.write('RMUF    0          muffin-tin radius (cm)                  [measured]\n')
+			fd.write('IELEC  -1          -1=electron, +1=positron                     [ -1]\n')
+			fd.write(f'MEXCH   {mexch}          V_ex (0=none, 1=FM, 2=TF, 3=RT)              [  1]\n')
+			# fd.write('MCPOL   2          V_cp (0=none, 1=B, 2=LDA)                    [  0]\n')
+			# fd.write('VPOLA  -1          atomic polarizability (cm^3)            [measured]\n')
+			# fd.write('VPOLB  -1          b_pol parameter                          [default]\n')
+			# fd.write('MABS    1          W_abs (0=none, 1=LDA-I, 2=LDA-II)            [  0]\n')
+			# fd.write('VABSA   2.0        absorption-potential strength, Aabs      [default]\n')
+			# fd.write('VABSD  -1.0        energy gap deLTA (eV)                    [default]\n')
+			# fd.write('IHe_fermi    2          high-E factorization (0=no, 1=yes, 2=Born)   [  1]\n')
+			fd.write(f'EV      {round(self.e0)}     kinetic energy (eV)                         [none]\n')
 
-		with open('dcs_' + '{:1.3e}'.format(round(self.e0)).replace('.','p').replace('+0','0') + '.dat','r') as fd:
-			if e0 < 100:
-				self.sigma_el = self._get_sigma(fd.readlines(), 35, 'Total elastic cross section = ')
-			else:
-				self.sigma_el = self._get_sigma(fd.readlines(), 32, 'Total elastic cross section = ')
-			self.emfp = 1/(self.sigma_el*self.atomic_density)
-			# sigma_tr_1 = get_sigma(lines, 33, '1st transport cross section = ')
-			# sigma_tr_2 = get_sigma(lines, 34, '2nd transport cross section = ')
-		
-		data = np.loadtxt('dcs_' + '{:1.3e}'.format(round(self.e0)).replace('.','p').replace('+0','0') + '.dat', skiprows=44)
-		self.decs = data[:,0]
-		self.decs_mu = data[:,1]
-		self.decs = data[:,2]
-		self.Ndecs = self.decs / np.trapz(self.decs, self.decs_mu)
+			fd.close()
+
+			subprocess.run('/Users/olgaridzel/Research/ESCal/src/MaterialDatabase/Data/Elsepa/elsepa-2020/elsepa-2020 < lub.in',shell=True,capture_output=True)
+
+			with open('dcs_' + '{:1.3e}'.format(round(self.e0)).replace('.','p').replace('+0','0') + '.dat','r') as fd:
+				result = [ line for line in fd.readlines() if "Total elastic cross section = " in line]
+				self.sigma_el = float(re.findall(r"\d+\.\d+[E][-]\d+", result[0])[0])
+				print("sigma_el = ",self.sigma_el)
+				self.emfp = 1/(self.sigma_el*1e16*self.atomic_density)
+			
+			data = np.loadtxt('dcs_' + '{:1.3e}'.format(round(self.e0)).replace('.','p').replace('+0','0') + '.dat', comments="#")
+			if i == 0:
+				self.decs = np.zeros_like(data[:,0])
+				self.decs_a = np.zeros_like(data[:,0])
+			self.decs_theta = data[:,0]
+			self.decs_mu = data[:,1]
+			self.decs_a += data[:,3]*self.composition.indices[i]
+			self.decs += data[:,2]*1e16*self.composition.indices[i]
+			
+		self.decs_a /= sumweights
+		self.decs /= sumweights
+		self.norm_decs = self.decs / np.trapz(self.decs, self.decs_mu)
 
 	def write_optical_data(self):
 		self.calculate_elf()
@@ -1687,8 +1698,8 @@ class OptFit:
 		material.calculate_diimfp(self.e0, self.de, self.n_q)
 		diimfp_interp = np.interp(self.exp_data.x_ndiimfp, material.diimfp_e, material.diimfp)
 		ind = self.exp_data.y_ndiimfp > 0
-		# chi_squared = np.sum((self.exp_data.y_ndiimfp - diimfp_interp)**2 / self.exp_data.x_ndiimfp.size)
-		rms = 100*np.sqrt(np.sum(((diimfp_interp[ind]-self.exp_data.y_ndiimfp[ind])/self.exp_data.y_ndiimfp[ind])**2) / self.exp_data.x_ndiimfp.size)
+		rms = np.sum((self.exp_data.y_ndiimfp - diimfp_interp)**2 / self.exp_data.x_ndiimfp.size)
+		# rms = 100*np.sqrt(np.sum(((diimfp_interp[ind]-self.exp_data.y_ndiimfp[ind])/self.exp_data.y_ndiimfp[ind])**2) / self.exp_data.x_ndiimfp.size)
 
 		if grad.size > 0:
 			grad = np.array([0, 0.5/rms])
