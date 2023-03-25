@@ -921,36 +921,10 @@ class Material:
 		if (self.e_gap > 0):
 			if e0 < self.e_gap:
 				raise InputError("Please specify the value of energy greater than the 2*band gap + the width of the valence band")
-			if e0 <= 100 + self.e_gap:
-				eloss = linspace(0, e0 - self.e_gap, de)
-			elif e0 <= 1000 + self.e_gap:
-				range_1 = linspace(0, 100, de)
-				range_2 = linspace(101, e0 - self.e_gap, 1)
-				eloss = np.concatenate((range_1, range_2))
-			else:
-				range_1 = linspace(0, 100, de)
-				range_2 = linspace(110, 1000, 1)
-				range_3 = linspace(1100, e0 - self.e_gap, 100)
-				eloss = np.concatenate((range_1, range_2, range_3))
-		else:
-			if e0 > self.e_fermi:
-				if e0 <= 100 + self.e_fermi:
-					eloss = linspace(1e-5, e0 - self.e_fermi, de)
-				elif e0 <= 1000 + self.e_fermi:
-					range_1 = linspace(1e-5, 100, de)
-					range_2 = linspace(101, e0 - self.e_fermi, 1)
-					eloss = np.concatenate((range_1, range_2))
-				else:
-					range_1 = linspace(1e-5, 100, de)
-					range_2 = linspace(110, 1000, 1)
-					range_3 = linspace(1100, e0 - self.e_fermi, 100)
-					eloss = np.concatenate((range_1, range_2, range_3))
-			else:
-				raise InputError("Please specify the value of energy greater than the Fermin energy")
-
-		self.eloss = eloss
 
 		e0 -= self.e_gap
+		eloss = linspace(self.e_gap, e0-self.width_of_the_valence_band, de)
+		self.eloss = eloss
 		rel_coef = ((1 + (e0/h2ev)/(c**2))**2) / (1 + (e0/h2ev)/(2*c**2))
 
 		if self.oscillators.alpha == 0 and self.oscillators.model != 'Mermin' and self.oscillators.model != 'MLL' and self.q_dependency is None:
@@ -969,7 +943,7 @@ class Material:
 			q = np.linspace(q_minus, q_plus, 2**(nq - 1), axis = 1)
 			if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
 				q[q == 0] = 0.01
-			self.q = q / a0
+			self.q = q # / a0
 			self.calculate_elf()
 			integrand = self.elf / q
 			integrand[q == 0] = 1e-5
@@ -1003,6 +977,8 @@ class Material:
 				imfp[i] = np.inf
 			else:
 				self.calculate_diimfp(energy[i], de, nq, normalised = False)
+				# ene = np.linspace(self.e_gap,energy[i]-self.e_gap-self.width_of_the_valence_band)
+				# iimfp = np.interp(ene,self.diimfp_e,self.iimfp)
 				imfp[i] = 1/np.trapz(self.iimfp, self.diimfp_e/h2ev)
 		self.imfp = imfp*a0
 		self.imfp_e = energy
@@ -1044,6 +1020,7 @@ class Material:
 	def calculate_elastic_properties(self, e0, mnucl,melec,mexch):
 		self.e0 = e0
 		sumweights = 0.0
+		self.decs_all = [None]*len(self.composition.elements)
 
 		for i in range(len(self.composition.elements)):
 			sumweights += self.composition.indices[i]
@@ -1085,6 +1062,7 @@ class Material:
 			self.decs_mu = data[:,1]
 			self.decs_a += data[:,3]*self.composition.indices[i]
 			self.decs += data[:,2]*1e16*self.composition.indices[i]
+			self.decs_all[i] = data[:,3]
 			
 		self.decs_a /= sumweights
 		self.decs /= sumweights
