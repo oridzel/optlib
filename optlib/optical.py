@@ -25,6 +25,16 @@ def wavelength2energy(wavelength):
     return hc / wavelength  * 1e3
 
 
+def tpp(e,e_p,e_gap,rho):
+    beta = -1.0 + 9.44/((e_p**2 + e_gap**2)**0.5) + 0.69*(rho**0.1)
+    gamma = 0.191*rho**(-0.5)
+    u = (e_p/28.816)**2
+    c = 19.7 - 9.1*u
+    d = 534 - 208*u
+    alpha = (1+e/1021999.8)/(1+e/510998.9)**2
+    return alpha*e/((e_p**2)*( beta*np.log(gamma*alpha*e) - (c/e) + (d/e**2) ))
+
+
 def linspace(start, stop, step=1.):
 	num = int((stop - start) / step + 1)
 	return np.linspace(start, stop, num)
@@ -223,7 +233,10 @@ class Material:
 			eps_imag += self.oscillators.A[i] * eps_drude_imag
 
 		if self.e_gap > 0:
-			eps_imag[self.eloss <= self.e_gap] = 1e-5
+			if len(eps_imag.shape) > 1:
+				eps_imag[self.eloss <= self.e_gap,0] = 1e-5
+			else:
+				eps_imag[self.eloss <= self.e_gap] = 1e-5
 		if self.use_kk_relation:
 			if len(eps_real.shape) > 1:
 				eps_real[:,0] = self.kramers_kronig(eps_imag)
@@ -723,9 +736,9 @@ class Material:
 		v = math.sqrt(2*e0/h2ev)
 		r /= (a0 * np.cos(alpha))
 		
-		q_minus = np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) - np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
-		q_plus = np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) + np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
-		q = np.linspace(q_minus, q_plus, 2**(n_q - 1), axis = 1)
+		qm = np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) - np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
+		qp = np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) + np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
+		q = np.linspace(qm, qp, 2**(n_q - 1), axis = 1)
 		if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
 			q[q == 0] = 0.01
 
@@ -838,9 +851,9 @@ class Material:
 		v = math.sqrt(2*e0/h2ev)
 		r /= (a0 * np.cos(alpha))
 		
-		q_minus = np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) - np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
-		q_plus = np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) + np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
-		q = np.linspace(q_minus, q_plus, 2**(n_q - 1), axis = 1)
+		qm = np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) - np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
+		qp = np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) + np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
+		q = np.linspace(qm, qp, 2**(n_q - 1), axis = 1)
 		if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
 			q[q == 0] = 0.01
 
@@ -923,47 +936,45 @@ class Material:
 				raise InputError("Please specify the value of energy greater than the 2*band gap + the width of the valence band")
 
 		e0 -= self.e_gap
-		eloss = linspace(self.e_gap, e0-self.width_of_the_valence_band, de)
-		self.eloss = eloss
+		self.eloss = linspace(self.e_gap, e0-self.width_of_the_valence_band, de)
 		rel_coef = ((1 + (e0/h2ev)/(c**2))**2) / (1 + (e0/h2ev)/(2*c**2))
 
 		if self.oscillators.alpha == 0 and self.oscillators.model != 'Mermin' and self.oscillators.model != 'MLL' and self.q_dependency is None:
-			q_minus = np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) - np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
-			q_plus =  np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) + np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
+			qm = np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) - np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
+			qp =  np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) + np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
 			self.extend_to_henke()
-			int_limits = np.log(q_plus/q_minus)
+			int_limits = np.log(qp/qm)
 			int_limits[np.isinf(int_limits)] = 1e-5
-			interp_elf = np.interp(eloss, self.eloss_extended_to_henke, self.elf_extended_to_henke)
+			interp_elf = np.interp(self.eloss, self.eloss_extended_to_henke, self.elf_extended_to_henke)
 			interp_elf[np.isnan(interp_elf)] = 1e-5
 			iimfp = rel_coef * 1/(math.pi*(e0/h2ev)) * interp_elf * int_limits
 			diimfp = iimfp / (h2ev * a0)
 		else:
-			q_minus = np.sqrt( e0/h2ev * ( 2 + e0/h2ev/(c**2) ) ) - np.sqrt( ( e0/h2ev - self.eloss/h2ev ) * ( 2 + (e0/h2ev - self.eloss/h2ev)/(c**2) ) )
-			q_plus =  np.sqrt( e0/h2ev * ( 2 + e0/h2ev/(c**2) ) ) + np.sqrt( ( e0/h2ev - self.eloss/h2ev ) * ( 2 + (e0/h2ev - self.eloss/h2ev)/(c**2) ) )
-			q = np.linspace(q_minus, q_plus, 2**(nq - 1), axis = 1)
+			qm = np.sqrt( e0/h2ev * ( 2 + e0/h2ev/(c**2) ) ) - np.sqrt( ( e0/h2ev - self.eloss/h2ev ) * ( 2 + (e0/h2ev - self.eloss/h2ev)/(c**2) ) )
+			qp =  np.sqrt( e0/h2ev * ( 2 + e0/h2ev/(c**2) ) ) + np.sqrt( ( e0/h2ev - self.eloss/h2ev ) * ( 2 + (e0/h2ev - self.eloss/h2ev)/(c**2) ) )
+			self.q = np.linspace(qm, qp, 2**(nq - 1), axis = 1)
 			if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
-				q[q == 0] = 0.01
-			self.q = q # / a0
+				self.q[self.q == 0] = 0.01
 			self.calculate_elf()
-			integrand = self.elf / q
-			integrand[q == 0] = 1e-5
+			integrand = self.elf / self.q
+			integrand[self.q == 0] = 1e-5
 			if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
-				integrand[q == 0.01] = 1e-5
-			iimfp = rel_coef * 1/(math.pi * (e0/h2ev)) * np.trapz( integrand, q, axis = 1 )
+				integrand[self.q == 0.01] = 1e-5
+			iimfp = rel_coef * 1/(math.pi * (e0/h2ev)) * np.trapz( integrand, self.q, axis = 1 )
 			diimfp = iimfp / (h2ev * a0)
 
 		diimfp[np.isnan(diimfp)] = 1e-5
 		iimfp[np.isnan(iimfp)] = 1e-5
-		self.eloss = old_eloss
 		self.q = old_q
 
 		if normalised:
-			diimfp = diimfp / np.trapz(diimfp, eloss)
+			diimfp = diimfp / np.trapz(diimfp, self.eloss)
 		
 		self.diimfp = diimfp
 		self.iimfp = iimfp
-		self.diimfp_e = eloss
+		self.diimfp_e = self.eloss
 		self.e0 = old_e0
+		self.eloss = old_eloss
 
 
 	def calculate_imfp(self, energy, de=0.5, nq=10, is_metal = True):
@@ -977,8 +988,6 @@ class Material:
 				imfp[i] = np.inf
 			else:
 				self.calculate_diimfp(energy[i], de, nq, normalised = False)
-				# ene = np.linspace(self.e_gap,energy[i]-self.e_gap-self.width_of_the_valence_band)
-				# iimfp = np.interp(ene,self.diimfp_e,self.iimfp)
 				imfp[i] = 1/np.trapz(self.iimfp, self.diimfp_e/h2ev)
 		self.imfp = imfp*a0
 		self.imfp_e = energy
@@ -1021,6 +1030,7 @@ class Material:
 		self.e0 = e0
 		sumweights = 0.0
 		self.decs_all = [None]*len(self.composition.elements)
+		self.sigma_el_all = [None]*len(self.composition.elements)
 
 		for i in range(len(self.composition.elements)):
 			sumweights += self.composition.indices[i]
@@ -1051,6 +1061,7 @@ class Material:
 			with open('dcs_' + '{:1.3e}'.format(round(self.e0)).replace('.','p').replace('+0','0') + '.dat','r') as fd:
 				result = [ line for line in fd.readlines() if "Total elastic cross section = " in line]
 				self.sigma_el = float(re.findall(r"\d+\.\d+[E][-]\d+", result[0])[0])
+				self.sigma_el_all[i] = self.sigma_el
 				print("sigma_el = ",self.sigma_el)
 				self.emfp = 1/(self.sigma_el*1e16*self.atomic_density)
 			
