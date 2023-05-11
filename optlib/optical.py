@@ -19,6 +19,7 @@ a0 = 0.529177  # Bohr Radius in Angstroem
 wpc = 4*math.pi * a0**3
 avogadro = 6.02217e23
 c = 137.036
+gas_z = [1, 2, 7, 8, 10]
 
 def wavelength2energy(wavelength):
 	# wavelength in Angstroem
@@ -26,6 +27,7 @@ def wavelength2energy(wavelength):
 
 
 def tpp(e,e_p,e_gap,rho):
+    # imfp in nm
     beta = -1.0 + 9.44/((e_p**2 + e_gap**2)**0.5) + 0.69*(rho**0.1)
     gamma = 0.191*rho**(-0.5)
     u = (e_p/28.816)**2
@@ -224,7 +226,7 @@ class Material:
 
 		for i in range(len(self.oscillators.A)):
 			eps_drude_real, eps_drude_imag = self._calculate_drude_oscillator(
-				self.oscillators.omega[i], self.oscillators.gamma[i], self.oscillators.alpha)
+				self.oscillators.omega[i], self.oscillators.gamma[i], self.oscillators.alpha[i])
 			if i == 0:
 				eps_real = self.oscillators.eps_b * np.ones_like(eps_drude_real)
 				eps_imag = np.zeros_like(eps_drude_imag)
@@ -288,7 +290,7 @@ class Material:
 
 		for i in range(len(self.oscillators.A)):
 			oneover_eps = self._calculate_dl_oscillator(
-				self.oscillators.omega[i], self.oscillators.gamma[i], self.oscillators.alpha)
+				self.oscillators.omega[i], self.oscillators.gamma[i], self.oscillators.alpha[i])
 			sum_oneover_eps += self.oscillators.A[i] * (oneover_eps - complex(1))
 
 		sum_oneover_eps += complex(1)
@@ -939,7 +941,7 @@ class Material:
 		self.eloss = linspace(self.e_gap, e0-self.width_of_the_valence_band, de)
 		rel_coef = ((1 + (e0/h2ev)/(c**2))**2) / (1 + (e0/h2ev)/(2*c**2))
 
-		if self.oscillators.alpha == 0 and self.oscillators.model != 'Mermin' and self.oscillators.model != 'MLL' and self.q_dependency is None:
+		if self.oscillators.alpha[0] == 0 and self.oscillators.model != 'Mermin' and self.oscillators.model != 'MLL' and self.q_dependency is None:
 			qm = np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) - np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
 			qp =  np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) + np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
 			self.extend_to_henke()
@@ -993,6 +995,14 @@ class Material:
 		self.imfp_e = energy
 
 
+	def scat_rate_ph(self,E, loss, eps_zero, eps_inf):
+		dephe = loss/E
+		sq_e = np.sqrt(1-dephe)
+		kbt = 9.445e-4 # room temp kbt in Ha
+		n = 1.0/(np.exp((loss/h2ev)/kbt) - 1)
+		return (eps_zero-eps_inf)/(eps_zero*eps_inf)*dephe*(n+1.0)/2*np.log((1.0+sq_e)/(1.0-sq_e))/a0
+
+
 	def calculate_phonon_imfp(self, energy, eps_zero, e1, e2):
 		T = 300.0 # K
 		k_B = 8.617e-5 # eV/K
@@ -1031,9 +1041,14 @@ class Material:
 		sumweights = 0.0
 		self.decs_all = [None]*len(self.composition.elements)
 		self.sigma_el_all = [None]*len(self.composition.elements)
+		self.sigma_tr_all = [None]*len(self.composition.elements)
+		rmuf = 1
 
 		for i in range(len(self.composition.elements)):
 			sumweights += self.composition.indices[i]
+
+			if self.composition.atomic_numbers[i] in gas_z:
+				rmuf = 0
 
 			fd = open('lub.in','w+')
 
@@ -1041,7 +1056,7 @@ class Material:
 			fd.write(f'MNUCL   {mnucl}          rho_n (1=P, 2=U, 3=F, 4=Uu)                  [  3]\n')
 			fd.write(f'NELEC   {self.composition.atomic_numbers[i]}         number of bound electrons                    [ IZ]\n')
 			fd.write(f'MELEC   {melec}         rho_e (1=TFM, 2=TFD, 3=DHFS, 4=DF, 5=file)   [  4]\n')
-			# fd.write('MUFFIN  0          0=free atom, 1=muffin-tin model              [  0]\n')
+			fd.write(f'MUFFIN  {rmuf}          0=free atom, 1=muffin-tin model              [  0]\n')
 			# fd.write('RMUF    0          muffin-tin radius (cm)                  [measured]\n')
 			fd.write('IELEC  -1          -1=electron, +1=positron                     [ -1]\n')
 			fd.write(f'MEXCH   {mexch}          V_ex (0=none, 1=FM, 2=TF, 3=RT)              [  1]\n')
@@ -1059,11 +1074,15 @@ class Material:
 			subprocess.run('/Users/olgaridzel/Research/ESCal/src/MaterialDatabase/Data/Elsepa/elsepa-2020/elsepa-2020 < lub.in',shell=True,capture_output=True)
 
 			with open('dcs_' + '{:1.3e}'.format(round(self.e0)).replace('.','p').replace('+0','0') + '.dat','r') as fd:
-				result = [ line for line in fd.readlines() if "Total elastic cross section = " in line]
+				lines = fd.readlines()
+				result = [ line for line in lines if "Total elastic cross section = " in line]
 				self.sigma_el = float(re.findall(r"\d+\.\d+[E][-]\d+", result[0])[0])
 				self.sigma_el_all[i] = self.sigma_el
 				print("sigma_el = ",self.sigma_el)
 				self.emfp = 1/(self.sigma_el*1e16*self.atomic_density)
+				result = [ line for line in lines if "1st transport cross section = " in line]
+				self.sigma_tr = float(re.findall(r"\d+\.\d+[E][-]\d+", result[0])[0])
+				self.sigma_tr_all[i] = self.sigma_tr
 			
 			data = np.loadtxt('dcs_' + '{:1.3e}'.format(round(self.e0)).replace('.','p').replace('+0','0') + '.dat', comments="#")
 			if i == 0:
@@ -1440,6 +1459,7 @@ class OptFit:
 		osc_min_A = np.ones_like(self.material.oscillators.A) * 1e-10
 		osc_min_gamma = np.ones_like(self.material.oscillators.gamma) * 0.025
 		osc_min_omega = np.ones_like(self.material.oscillators.omega) * self.material.e_gap
+		osc_min_alpha = np.zeros_like(self.material.oscillators.alpha)
 		
 		if self.material.oscillators.model == 'Drude':
 			osc_max_A = np.ones_like(self.material.oscillators.A) * 2e3
@@ -1447,21 +1467,22 @@ class OptFit:
 			osc_max_A = np.ones_like(self.material.oscillators.A)
 
 		osc_max_gamma = np.ones_like(self.material.oscillators.gamma) * 100
-		osc_max_omega = np.ones_like(self.material.oscillators.omega) * 500		
+		osc_max_omega = np.ones_like(self.material.oscillators.omega) * 500	
+		osc_max_alpha = np.ones_like(self.material.oscillators.alpha)	
 
 		if self.material.oscillators.model == 'MLL':
 			osc_min_U = 0.0
 			osc_max_U = 10.0
 			self.lb = np.append( np.hstack((osc_min_A,osc_min_gamma,osc_min_omega)), osc_min_U )
 			self.ub = np.append( np.hstack((osc_max_A,osc_max_gamma,osc_max_omega)), osc_max_U )
-		elif self.material.oscillators.model == 'Mermin' or self.material.oscillators.model == 'Drude':
-			self.lb = np.hstack((osc_min_A,osc_min_gamma,osc_min_omega))
-			self.ub = np.hstack((osc_max_A,osc_max_gamma,osc_max_omega))
 		else:
-			osc_min_alpha = 0.0
-			osc_max_alpha = 1.0
-			self.lb = np.append( np.hstack((osc_min_A,osc_min_gamma,osc_min_omega)), osc_min_alpha )
-			self.ub = np.append( np.hstack((osc_max_A,osc_max_gamma,osc_max_omega)), osc_max_alpha )
+			self.lb = np.hstack((osc_min_A,osc_min_gamma,osc_min_omega,osc_min_alpha))
+			self.ub = np.hstack((osc_max_A,osc_max_gamma,osc_max_omega,osc_max_alpha))
+		# else:
+		# 	osc_min_alpha = 0.0
+		# 	osc_max_alpha = 1.0
+		# 	self.lb = np.append( np.hstack((osc_min_A,osc_min_gamma,osc_min_omega)), osc_min_alpha )
+		# 	self.ub = np.append( np.hstack((osc_max_A,osc_max_gamma,osc_max_omega)), osc_max_alpha )
 
 	def run_optimisation(self, diimfp_coef, elf_coef, maxeval = 1000, xtol_rel = 1e-6, is_global = False):
 		print('Starting optimisation...')
@@ -1636,25 +1657,26 @@ class OptFit:
 		if osc_struct.oscillators.model == 'MLL':
 			vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.u )
 		elif self.material.oscillators.model == 'Mermin' or self.material.oscillators.model == 'Drude':
-			vec = np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega))
-		else:
-			vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.oscillators.alpha )
+			vec = np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega,osc_struct.oscillators.alpha))
+		# else:
+		# 	vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.oscillators.alpha )
 		return vec
 
 	def vec2struct(self, osc_vec):
 		if self.material.oscillators.model == 'Mermin' or self.material.oscillators.model == 'Drude':
-			oscillators = np.split(osc_vec[:],3)
+			oscillators = np.split(osc_vec[:],4)
 		else:
 			oscillators = np.split(osc_vec[0:-1],3)
 		material = copy.deepcopy(self.material)
 		material.oscillators.A = oscillators[0]
 		material.oscillators.gamma = oscillators[1]
 		material.oscillators.omega = oscillators[2]
+		material.oscillators.alpha = oscillators[3]
 
 		if self.material.oscillators.model == 'MLL':
 			material.u = osc_vec[-1]
-		elif self.material.oscillators.model != 'Mermin' and self.material.oscillators.model != 'Drude':
-			material.oscillators.alpha = osc_vec[-1]
+		# elif self.material.oscillators.model != 'Mermin' and self.material.oscillators.model != 'Drude':
+		# 	material.oscillators.alpha = osc_vec[-1]
 			
 		return material
 
