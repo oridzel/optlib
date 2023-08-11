@@ -950,17 +950,18 @@ class Material:
 			iimfp = rel_coef * 1/(math.pi*(e0/h2ev)) * interp_elf * int_limits
 			diimfp = iimfp / (h2ev * a0)
 		else:
-			qm = np.sqrt( e0/h2ev * ( 2 + e0/h2ev/(c**2) ) ) - np.sqrt( ( e0/h2ev - self.eloss/h2ev ) * ( 2 + (e0/h2ev - self.eloss/h2ev)/(c**2) ) )
-			qp =  np.sqrt( e0/h2ev * ( 2 + e0/h2ev/(c**2) ) ) + np.sqrt( ( e0/h2ev - self.eloss/h2ev ) * ( 2 + (e0/h2ev - self.eloss/h2ev)/(c**2) ) )
-			self.q = np.linspace(qm, qp, 2**(nq - 1), axis = 1)
+			qm = np.log( np.sqrt( e0/h2ev * ( 2 + e0/h2ev/(c**2) ) ) - np.sqrt( ( e0/h2ev - self.eloss/h2ev ) * ( 2 + (e0/h2ev - self.eloss/h2ev)/(c**2) ) ) )
+			qp = np.log( np.sqrt( e0/h2ev * ( 2 + e0/h2ev/(c**2) ) ) + np.sqrt( ( e0/h2ev - self.eloss/h2ev ) * ( 2 + (e0/h2ev - self.eloss/h2ev)/(c**2) ) ) )
+			q = np.linspace(qm, qp, nq, axis = 1)
+			self.q = np.exp(q)
 			if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
 				self.q[self.q == 0] = 0.01
 			self.calculate_elf()
-			integrand = self.elf / self.q
-			integrand[self.q == 0] = 1e-5
-			if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
-				integrand[self.q == 0.01] = 1e-5
-			iimfp = rel_coef * 1/(math.pi * (e0/h2ev)) * np.trapz( integrand, self.q, axis = 1 )
+			integrand = self.elf
+			# integrand[self.q == 0] = 1e-5
+			# if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
+			# 	integrand[self.q == 0.01] = 1e-5
+			iimfp = rel_coef * 1/(math.pi * (e0/h2ev)) * np.trapz( integrand, q, axis = 1 )
 			diimfp = iimfp / (h2ev * a0)
 
 		diimfp[np.isnan(diimfp)] = 1e-5
