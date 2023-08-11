@@ -1,8 +1,6 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(name='optlib',
       version='1.0',
-      # list folders, not files
-      packages=['optlib'],
-      scripts=['optlib/optical.py']
+      packages=find_packages()
       )
