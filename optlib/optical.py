@@ -926,17 +926,21 @@ class Material:
 		self.sep = np.trapz(self.dsep, eloss, axis=0)
 
 
-	def calculate_diimfp(self, e0, de = 0.5, nq = 10, normalised = True):
+	def calculate_diimfp(self, e0, de = 0.5, nq = 10, normalised = True, is_metal = True):
 		old_eloss = self.eloss
 		old_q = self.q
 		old_e0 = e0
 
-		if (self.e_gap > 0):
+		if is_metal:
 			if e0 < self.e_gap:
 				raise InputError("Please specify the value of energy greater than the 2*band gap + the width of the valence band")
-
-		e0 -= self.e_gap
-		self.eloss = linspace(self.e_gap, e0-self.width_of_the_valence_band, de)
+			else:
+				e0 -= self.e_gap
+			e_shift = self.width_of_the_valence_band
+		else:
+			e_shift = self.e_fermi
+				
+		self.eloss = linspace(self.e_gap, e0-e_shift, de)
 		rel_coef = ((1 + (e0/h2ev)/(c**2))**2) / (1 + (e0/h2ev)/(2*c**2))
 
 		if self.oscillators.alpha[0] == 0 and self.oscillators.model != 'Mermin' and self.oscillators.model != 'MLL' and self.q_dependency is None:
@@ -985,11 +989,8 @@ class Material:
 			raise InputError("Please specify the values of the band gap e_gap and the width of the valence band width_of_the_valence_band")
 		imfp = np.zeros_like(energy)
 		for i in range(energy.shape[0]):
-			if energy[i] <= self.e_gap*2 + self.width_of_the_valence_band:
-				imfp[i] = np.inf
-			else:
-				self.calculate_diimfp(energy[i], de, nq, normalised = False)
-				imfp[i] = 1/np.trapz(self.iimfp, self.diimfp_e/h2ev)
+			self.calculate_diimfp(energy[i], de, nq, normalised = False, is_metal)
+			imfp[i] = 1/np.trapz(self.iimfp, self.diimfp_e/h2ev)
 		self.imfp = imfp*a0
 		self.imfp_e = energy
 
