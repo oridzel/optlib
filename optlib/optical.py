@@ -3,7 +3,6 @@ import subprocess
 import numpy as np
 import math
 import matplotlib.pyplot as plt
-import nlopt
 import copy
 import pandas as pd
 import os
@@ -1442,6 +1441,7 @@ class SAReflection:
 		self.spectrum = conv(sbs, gaussian, self.de)
 
 class OptFit:
+	import nlopt
 
 	def __init__(self, material, exp_data, e0, de = 0.5, n_q = 10):
 		if not isinstance(material, Material):
