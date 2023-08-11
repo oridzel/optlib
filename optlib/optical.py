@@ -930,6 +930,7 @@ class Material:
 		old_eloss = self.eloss
 		old_q = self.q
 		old_e0 = e0
+		e_shift = 0.0
 
 		if is_metal:
 			if e0 < self.e_gap:
@@ -939,8 +940,8 @@ class Material:
 			e_shift = self.width_of_the_valence_band
 		else:
 			e_shift = self.e_fermi
-				
-		self.eloss = linspace(self.e_gap, e0-e_shift, de)
+		
+		self.eloss = linspace(self.e_gap, e0 - e_shift, de)
 		rel_coef = ((1 + (e0/h2ev)/(c**2))**2) / (1 + (e0/h2ev)/(2*c**2))
 
 		if self.oscillators.alpha[0] == 0 and self.oscillators.model != 'Mermin' and self.oscillators.model != 'MLL' and self.q_dependency is None:
