@@ -989,7 +989,7 @@ class Material:
 			raise InputError("Please specify the values of the band gap e_gap and the width of the valence band width_of_the_valence_band")
 		imfp = np.zeros_like(energy)
 		for i in range(energy.shape[0]):
-			self.calculate_diimfp(energy[i], de, nq, normalised = False, is_metal)
+			self.calculate_diimfp(energy[i], de, nq, normalised = False, is_metal = is_metal)
 			imfp[i] = 1/np.trapz(self.iimfp, self.diimfp_e/h2ev)
 		self.imfp = imfp*a0
 		self.imfp_e = energy
