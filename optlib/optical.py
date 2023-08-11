@@ -932,7 +932,7 @@ class Material:
 		old_e0 = e0
 		e_shift = 0.0
 
-		if is_metal:
+		if not is_metal:
 			if e0 < self.e_gap:
 				raise InputError("Please specify the value of energy greater than the 2*band gap + the width of the valence band")
 			else:
