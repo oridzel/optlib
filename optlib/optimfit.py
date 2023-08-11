@@ -6,6 +6,7 @@ import os
 import time
 from tqdm import tqdm
 import nlopt
+import optlib.optical
 
 hc = 12.3981756608  # planck constant times velocity of light keV Angstr
 r0 = 2.8179403227e-15
