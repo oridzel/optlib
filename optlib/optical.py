@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 import copy
 import pandas as pd
 import os
-from scipy import special, interpolate, sparse, stats, optimize
 import time
 from tqdm import tqdm
 import re
