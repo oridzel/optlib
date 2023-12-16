@@ -27,7 +27,6 @@ class OptFit:
 		osc_min_A = np.ones_like(self.material.oscillators.A) * 1e-10
 		osc_min_gamma = np.ones_like(self.material.oscillators.gamma) * 0.025
 		osc_min_omega = np.ones_like(self.material.oscillators.omega) * self.material.e_gap
-		osc_min_alpha = 0
 		
 		if self.material.oscillators.model == 'Drude':
 			osc_max_A = np.ones_like(self.material.oscillators.A) * 2e3
@@ -36,14 +35,18 @@ class OptFit:
 
 		osc_max_gamma = np.ones_like(self.material.oscillators.gamma) * 100
 		osc_max_omega = np.ones_like(self.material.oscillators.omega) * 500
-		osc_max_alpha = 1
 
 		if self.material.oscillators.model == 'MLL':
 			osc_min_U = 0.0
 			osc_max_U = 10.0
 			self.lb = np.append( np.hstack((osc_min_A,osc_min_gamma,osc_min_omega)), osc_min_U )
 			self.ub = np.append( np.hstack((osc_max_A,osc_max_gamma,osc_max_omega)), osc_max_U )
+		elif self.material.oscillators.model == 'Mermin':
+			self.lb = np.hstack((osc_min_A,osc_min_gamma,osc_min_omega))
+			self.ub = np.hstack((osc_max_A,osc_max_gamma,osc_max_omega))
 		else:
+			osc_min_alpha = 0.0
+			osc_max_alpha = 1.0
 			self.lb = np.append( np.hstack((osc_min_A,osc_min_gamma,osc_min_omega)), osc_min_alpha )
 			self.ub = np.append( np.hstack((osc_max_A,osc_max_gamma,osc_max_omega)), osc_max_alpha )
 			
