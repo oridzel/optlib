@@ -961,9 +961,9 @@ class Material:
 				self.q[self.q == 0] = 0.01
 			self.calculate_elf()
 			integrand = self.elf
-			# integrand[self.q == 0] = 1e-5
-			# if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
-			# 	integrand[self.q == 0.01] = 1e-5
+			integrand[self.q == 0] = 1e-5
+			if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
+				integrand[self.q == 0.01] = 1e-5
 			iimfp = rel_coef * 1/(math.pi * (e0/h2ev)) * np.trapz( integrand, q, axis = 1 )
 			diimfp = iimfp / (h2ev * a0)
 
