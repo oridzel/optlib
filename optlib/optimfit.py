@@ -7,6 +7,7 @@ import time
 from tqdm import tqdm
 import nlopt
 from optlib.optical import Material
+from optlib.constants import *
 
 class OptFit:
 
