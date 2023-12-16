@@ -216,7 +216,7 @@ class Material:
 
 		for i in range(len(self.oscillators.A)):
 			eps_drude_real, eps_drude_imag = self._calculate_drude_oscillator(
-				self.oscillators.omega[i], self.oscillators.gamma[i], self.oscillators.alpha[i])
+				self.oscillators.omega[i], self.oscillators.gamma[i], self.oscillators.alpha)
 			if i == 0:
 				eps_real = self.oscillators.eps_b * np.ones_like(eps_drude_real)
 				eps_imag = np.zeros_like(eps_drude_imag)
@@ -280,7 +280,7 @@ class Material:
 
 		for i in range(len(self.oscillators.A)):
 			oneover_eps = self._calculate_dl_oscillator(
-				self.oscillators.omega[i], self.oscillators.gamma[i], self.oscillators.alpha[i])
+				self.oscillators.omega[i], self.oscillators.gamma[i], self.oscillators.alpha)
 			sum_oneover_eps += self.oscillators.A[i] * (oneover_eps - complex(1))
 
 		sum_oneover_eps += complex(1)
