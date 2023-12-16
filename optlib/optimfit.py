@@ -44,8 +44,8 @@ class OptFit:
 			self.lb = np.append( np.hstack((osc_min_A,osc_min_gamma,osc_min_omega)), osc_min_U )
 			self.ub = np.append( np.hstack((osc_max_A,osc_max_gamma,osc_max_omega)), osc_max_U )
 		else:
-			self.lb = np.hstack((osc_min_A,osc_min_gamma,osc_min_omega,osc_min_alpha))
-			self.ub = np.hstack((osc_max_A,osc_max_gamma,osc_max_omega,osc_max_alpha))
+			self.lb = np.append( np.hstack((osc_min_A,osc_min_gamma,osc_min_omega)), osc_min_alpha )
+			self.ub = np.append( np.hstack((osc_max_A,osc_max_gamma,osc_max_omega)), osc_max_alpha )
 			
 
 	def run_optimisation(self, diimfp_coef, elf_coef, maxeval = 1000, xtol_rel = 1e-6, is_global = False):
