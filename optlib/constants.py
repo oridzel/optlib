@@ -1,3 +1,5 @@
+import math
+
 hc = 12.3981756608  # planck constant times velocity of light keV Angstr
 r0 = 2.8179403227e-15
 h2ev = 27.21184  # Hartree, converts Hartree to eV
