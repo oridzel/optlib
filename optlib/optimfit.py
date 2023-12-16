@@ -223,27 +223,26 @@ class OptFit:
 	def struct2vec(self, osc_struct):
 		if osc_struct.oscillators.model == 'MLL':
 			vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.u )
-		elif self.material.oscillators.model == 'Mermin' or self.material.oscillators.model == 'Drude':
-			vec = np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega,osc_struct.oscillators.alpha))
-		# else:
-		# 	vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.oscillators.alpha )
+		elif self.material.oscillators.model == 'Mermin':
+			vec = np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega))
+		else:
+			vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.oscillators.alpha )
 		return vec
 
 	def vec2struct(self, osc_vec):
-		if self.material.oscillators.model == 'Mermin' or self.material.oscillators.model == 'Drude':
-			oscillators = np.split(osc_vec[:],4)
+		if self.material.oscillators.model == 'Mermin':
+			oscillators = np.split(osc_vec[:],3)
 		else:
 			oscillators = np.split(osc_vec[0:-1],3)
 		material = copy.deepcopy(self.material)
 		material.oscillators.A = oscillators[0]
 		material.oscillators.gamma = oscillators[1]
 		material.oscillators.omega = oscillators[2]
-		material.oscillators.alpha = oscillators[3]
-
+		
 		if self.material.oscillators.model == 'MLL':
 			material.u = osc_vec[-1]
-		# elif self.material.oscillators.model != 'Mermin' and self.material.oscillators.model != 'Drude':
-		# 	material.oscillators.alpha = osc_vec[-1]
+		elif self.material.oscillators.model != 'Mermin':
+			material.oscillators.alpha = osc_vec[-1]
 			
 		return material
 
