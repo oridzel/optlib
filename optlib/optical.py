@@ -919,12 +919,12 @@ class Material:
 		self.sep = np.trapz(self.dsep, eloss, axis=0)
 
 
-	def calculate_diimfp(self, e0, de = 0.5, nq = 10, normalised = True, is_metal = True):
+	def calculate_diimfp(self, e0, de = 0.5, nq = 10, normalised = True):
 		old_eloss = self.eloss
 		old_q = self.q
 		old_e0 = e0
 
-		if is_metal:
+		if self.is_metal:
 			self.eloss = linspace(1e-5, e0 - self.e_fermi, de)
 		else:
 			if e0 < 2*self.e_gap + self.width_of_the_valence_band:
@@ -974,14 +974,14 @@ class Material:
 		self.eloss = old_eloss
 
 
-	def calculate_imfp(self, energy, de=0.5, nq=10, is_metal = True):
-		if is_metal and self.e_fermi == 0:
+	def calculate_imfp(self, energy, de=0.5, nq=10):
+		if self.is_metal and self.e_fermi == 0:
 			raise InputError("Please specify the value of the Fermi energy e_fermi")
-		elif not is_metal and self.e_gap == 0 and self.width_of_the_valence_band == 0:
+		elif not self.is_metal and self.e_gap == 0 and self.width_of_the_valence_band == 0:
 			raise InputError("Please specify the values of the band gap e_gap and the width of the valence band width_of_the_valence_band")
 		imfp = np.zeros_like(energy)
 		for i in range(energy.shape[0]):
-			self.calculate_diimfp(energy[i], de, nq, normalised = False, is_metal = is_metal)
+			self.calculate_diimfp(energy[i], de, nq, normalised = False)
 			imfp[i] = 1/np.trapz(self.iimfp, self.diimfp_e/h2ev)
 		self.imfp = imfp*a0
 		self.imfp_e = energy
