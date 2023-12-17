@@ -290,8 +290,8 @@ class OptFit:
 		material.calculate_elf()
 		elf_interp = np.interp(self.exp_data.x_elf, material.eloss, material.elf)
 		ind = self.exp_data.y_elf > 0
-		# chi_squared = np.sum((self.exp_data.y_elf - elf_interp)**2 / self.exp_data.x_elf.size)
-		rms = 100*np.sqrt(np.sum(((elf_interp[ind]-self.exp_data.y_elf[ind])/self.exp_data.y_elf[ind])**2) / self.exp_data.x_elf.size)
+		rms = np.sum((self.exp_data.y_elf - elf_interp)**2 / self.exp_data.x_elf.size)
+		# rms = 100*np.sqrt(np.sum(((elf_interp[ind]-self.exp_data.y_elf[ind])/self.exp_data.y_elf[ind])**2) / self.exp_data.x_elf.size)
 
 		if grad.size > 0:
 			grad = np.array([0, 0.5/rms])
@@ -310,8 +310,11 @@ class OptFit:
 		ind_ndiimfp = self.exp_data.y_ndiimfp > 0
 		ind_elf = self.exp_data.y_elf > 0
 
-		rms = self.diimfp_coef*np.sqrt(np.sum(((self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])/self.exp_data.y_ndiimfp[ind_ndiimfp])**2 / len(self.exp_data.y_ndiimfp[ind_ndiimfp]))) + \
-				self.elf_coef*np.sqrt(np.sum(((self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])/self.exp_data.y_elf[ind_elf])**2) / len(self.exp_data.y_elf[ind_elf]))
+		rms = self.diimfp_coef*np.sum( (self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])**2 / len(self.exp_data.y_ndiimfp[ind_ndiimfp]) ) + \
+			self.elf_coef*np.sum( (self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])**2 / len(self.exp_data.y_elf[ind_elf]) )
+		
+		# rms = self.diimfp_coef*np.sqrt(np.sum(((self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])/self.exp_data.y_ndiimfp[ind_ndiimfp])**2 / len(self.exp_data.y_ndiimfp[ind_ndiimfp]))) + \
+		# 		self.elf_coef*np.sqrt(np.sum(((self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])/self.exp_data.y_elf[ind_elf])**2) / len(self.exp_data.y_elf[ind_elf]))
 		
 		if grad.size > 0:
 			grad = np.array([0, 0.5/rms])
