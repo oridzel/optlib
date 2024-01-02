@@ -949,7 +949,7 @@ class Material:
 			qm = np.log( np.sqrt( e0/h2ev * ( 2 + e0/h2ev/(c**2) ) ) - np.sqrt( ( e0/h2ev - self.eloss/h2ev ) * ( 2 + (e0/h2ev - self.eloss/h2ev)/(c**2) ) ) )
 			qp = np.log( np.sqrt( e0/h2ev * ( 2 + e0/h2ev/(c**2) ) ) + np.sqrt( ( e0/h2ev - self.eloss/h2ev ) * ( 2 + (e0/h2ev - self.eloss/h2ev)/(c**2) ) ) )
 			q = np.linspace(qm, qp, nq, axis = 1)
-			self.q = np.exp(q)
+			self.q = np.exp(q/a0)
 			if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
 				self.q[self.q == 0] = 0.01
 			self.calculate_elf()
