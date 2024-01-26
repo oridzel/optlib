@@ -9,17 +9,8 @@ import os
 import time
 from tqdm import tqdm
 import re
-from scipy.interpolate import interp1d
 from scipy import optimize
-
-hc = 12.3981756608  # planck constant times velocity of light keV Angstr
-r0 = 2.8179403227e-15
-h2ev = 27.21184  # Hartree, converts Hartree to eV
-a0 = 0.529177  # Bohr Radius in Angstroem
-wpc = 4*math.pi * a0**3
-avogadro = 6.02217e23
-c = 137.036
-gas_z = [1, 2, 7, 8, 10]
+from optlib.constants import *
 
 def wavelength2energy(wavelength):
 	# wavelength in Angstroem
@@ -170,6 +161,7 @@ class Material:
 		self.use_henke_for_ne = False
 		self.electron_density_henke = 0
 		self.use_kk_relation = False
+		self.is_metal = True
 
 	@property
 	def q(self):
@@ -1140,7 +1132,7 @@ class Material:
 		old_q = self.q
 		old_e0 = e0
 
-		if is_metal:
+		if self.is_metal:
 			self.eloss = linspace(1e-5, e0 - self.e_fermi, de)
 		else:
 			if e0 < 2*self.e_gap + self.width_of_the_valence_band:
@@ -1165,11 +1157,15 @@ class Material:
 			qm = np.log( np.sqrt( e0/h2ev * ( 2 + e0/h2ev/(c**2) ) ) - np.sqrt( ( e0/h2ev - self.eloss/h2ev ) * ( 2 + (e0/h2ev - self.eloss/h2ev)/(c**2) ) ) )
 			qp = np.log( np.sqrt( e0/h2ev * ( 2 + e0/h2ev/(c**2) ) ) + np.sqrt( ( e0/h2ev - self.eloss/h2ev ) * ( 2 + (e0/h2ev - self.eloss/h2ev)/(c**2) ) ) )
 			q = np.linspace(qm, qp, nq, axis = 1)
+			self.q = np.exp(q)/a0
 			if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
 				q[q == 0] = 0.01
 			self.q = np.exp(q)/a0
 			self.calculate_elf()
 			integrand = self.elf
+			integrand[self.q == 0] = 1e-5
+			if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
+				integrand[self.q == 0.01] = 1e-5
 			iimfp = rel_coef * 1/(math.pi * (e0/h2ev)) * np.trapz( integrand, q, axis = 1 )
 			diimfp = iimfp / (h2ev * a0)
 
@@ -1187,14 +1183,14 @@ class Material:
 		self.eloss = old_eloss
 
 
-	def calculate_imfp(self, energy, de=0.5, nq=10, is_metal = True):
-		if is_metal and self.e_fermi == 0:
+	def calculate_imfp(self, energy, de=0.5, nq=10):
+		if self.is_metal and self.e_fermi == 0:
 			raise InputError("Please specify the value of the Fermi energy e_fermi")
-		elif not is_metal and self.e_gap == 0 and self.width_of_the_valence_band == 0:
+		elif not self.is_metal and self.e_gap == 0 and self.width_of_the_valence_band == 0:
 			raise InputError("Please specify the values of the band gap e_gap and the width of the valence band width_of_the_valence_band")
 		imfp = np.zeros_like(energy)
 		for i in range(energy.shape[0]):
-			self.calculate_diimfp(energy[i], de, nq, normalised = False, is_metal = is_metal)
+			self.calculate_diimfp(energy[i], de, nq, normalised = False)
 			imfp[i] = 1/np.trapz(self.iimfp, self.diimfp_e/h2ev)
 		self.imfp = imfp*a0
 		self.imfp_e = energy

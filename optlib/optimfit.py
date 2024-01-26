@@ -7,6 +7,7 @@ import time
 from tqdm import tqdm
 import nlopt
 from optlib.optical import Material
+from optlib.constants import *
 
 class OptFit:
 
@@ -26,7 +27,6 @@ class OptFit:
 		osc_min_A = np.ones_like(self.material.oscillators.A) * 1e-10
 		osc_min_gamma = np.ones_like(self.material.oscillators.gamma) * 0.025
 		osc_min_omega = np.ones_like(self.material.oscillators.omega) * self.material.e_gap
-		osc_min_alpha = np.zeros_like(self.material.oscillators.alpha)
 		
 		if self.material.oscillators.model == 'Drude':
 			osc_max_A = np.ones_like(self.material.oscillators.A) * 2e3
@@ -34,22 +34,22 @@ class OptFit:
 			osc_max_A = np.ones_like(self.material.oscillators.A)
 
 		osc_max_gamma = np.ones_like(self.material.oscillators.gamma) * 100
-		osc_max_omega = np.ones_like(self.material.oscillators.omega) * 500	
-		osc_max_alpha = np.ones_like(self.material.oscillators.alpha)	
+		osc_max_omega = np.ones_like(self.material.oscillators.omega) * 500
 
 		if self.material.oscillators.model == 'MLL':
 			osc_min_U = 0.0
 			osc_max_U = 10.0
 			self.lb = np.append( np.hstack((osc_min_A,osc_min_gamma,osc_min_omega)), osc_min_U )
 			self.ub = np.append( np.hstack((osc_max_A,osc_max_gamma,osc_max_omega)), osc_max_U )
+		elif self.material.oscillators.model == 'Mermin':
+			self.lb = np.hstack((osc_min_A,osc_min_gamma,osc_min_omega))
+			self.ub = np.hstack((osc_max_A,osc_max_gamma,osc_max_omega))
 		else:
-			self.lb = np.hstack((osc_min_A,osc_min_gamma,osc_min_omega,osc_min_alpha))
-			self.ub = np.hstack((osc_max_A,osc_max_gamma,osc_max_omega,osc_max_alpha))
-		# else:
-		# 	osc_min_alpha = 0.0
-		# 	osc_max_alpha = 1.0
-		# 	self.lb = np.append( np.hstack((osc_min_A,osc_min_gamma,osc_min_omega)), osc_min_alpha )
-		# 	self.ub = np.append( np.hstack((osc_max_A,osc_max_gamma,osc_max_omega)), osc_max_alpha )
+			osc_min_alpha = 0.0
+			osc_max_alpha = 1.0
+			self.lb = np.append( np.hstack((osc_min_A,osc_min_gamma,osc_min_omega)), osc_min_alpha )
+			self.ub = np.append( np.hstack((osc_max_A,osc_max_gamma,osc_max_omega)), osc_max_alpha )
+			
 
 	def run_optimisation(self, diimfp_coef, elf_coef, maxeval = 1000, xtol_rel = 1e-6, is_global = False):
 		print('Starting optimisation...')
@@ -223,27 +223,26 @@ class OptFit:
 	def struct2vec(self, osc_struct):
 		if osc_struct.oscillators.model == 'MLL':
 			vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.u )
-		elif self.material.oscillators.model == 'Mermin' or self.material.oscillators.model == 'Drude':
-			vec = np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega,osc_struct.oscillators.alpha))
-		# else:
-		# 	vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.oscillators.alpha )
+		elif self.material.oscillators.model == 'Mermin':
+			vec = np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega))
+		else:
+			vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.oscillators.alpha )
 		return vec
 
 	def vec2struct(self, osc_vec):
-		if self.material.oscillators.model == 'Mermin' or self.material.oscillators.model == 'Drude':
-			oscillators = np.split(osc_vec[:],4)
+		if self.material.oscillators.model == 'Mermin':
+			oscillators = np.split(osc_vec[:],3)
 		else:
 			oscillators = np.split(osc_vec[0:-1],3)
 		material = copy.deepcopy(self.material)
 		material.oscillators.A = oscillators[0]
 		material.oscillators.gamma = oscillators[1]
 		material.oscillators.omega = oscillators[2]
-		material.oscillators.alpha = oscillators[3]
-
+		
 		if self.material.oscillators.model == 'MLL':
 			material.u = osc_vec[-1]
-		# elif self.material.oscillators.model != 'Mermin' and self.material.oscillators.model != 'Drude':
-		# 	material.oscillators.alpha = osc_vec[-1]
+		elif self.material.oscillators.model != 'Mermin':
+			material.oscillators.alpha = osc_vec[-1]
 			
 		return material
 
@@ -291,8 +290,8 @@ class OptFit:
 		material.calculate_elf()
 		elf_interp = np.interp(self.exp_data.x_elf, material.eloss, material.elf)
 		ind = self.exp_data.y_elf > 0
-		# chi_squared = np.sum((self.exp_data.y_elf - elf_interp)**2 / self.exp_data.x_elf.size)
-		rms = 100*np.sqrt(np.sum(((elf_interp[ind]-self.exp_data.y_elf[ind])/self.exp_data.y_elf[ind])**2) / self.exp_data.x_elf.size)
+		rms = np.sum((self.exp_data.y_elf - elf_interp)**2 / self.exp_data.x_elf.size)
+		# rms = 100*np.sqrt(np.sum(((elf_interp[ind]-self.exp_data.y_elf[ind])/self.exp_data.y_elf[ind])**2) / self.exp_data.x_elf.size)
 
 		if grad.size > 0:
 			grad = np.array([0, 0.5/rms])
@@ -311,8 +310,11 @@ class OptFit:
 		ind_ndiimfp = self.exp_data.y_ndiimfp > 0
 		ind_elf = self.exp_data.y_elf > 0
 
-		rms = self.diimfp_coef*np.sqrt(np.sum(((self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])/self.exp_data.y_ndiimfp[ind_ndiimfp])**2 / len(self.exp_data.y_ndiimfp[ind_ndiimfp]))) + \
-				self.elf_coef*np.sqrt(np.sum(((self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])/self.exp_data.y_elf[ind_elf])**2) / len(self.exp_data.y_elf[ind_elf]))
+		rms = self.diimfp_coef*np.sum( (self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])**2 / len(self.exp_data.y_ndiimfp[ind_ndiimfp]) ) + \
+			self.elf_coef*np.sum( (self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])**2 / len(self.exp_data.y_elf[ind_elf]) )
+		
+		# rms = self.diimfp_coef*np.sqrt(np.sum(((self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])/self.exp_data.y_ndiimfp[ind_ndiimfp])**2 / len(self.exp_data.y_ndiimfp[ind_ndiimfp]))) + \
+		# 		self.elf_coef*np.sqrt(np.sum(((self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])/self.exp_data.y_elf[ind_elf])**2) / len(self.exp_data.y_elf[ind_elf]))
 		
 		if grad.size > 0:
 			grad = np.array([0, 0.5/rms])
