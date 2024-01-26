@@ -588,6 +588,7 @@ class Material:
 		omega_0 = np.zeros_like(self.eloss)
 		omega_pl = np.linspace(1e-5,2000,200001)/h2ev
 
+		start_time = time.time()
 		for k in range(self.size_q):
 			epsilon = self.calculate_lindhard_dielectric_function(self.q[k],omega_pl)
 			q_m = self._q_minus(omega_pl)
@@ -612,6 +613,7 @@ class Material:
 			elf_se[:,k] = np.trapz(se,omega_pl)
 
 		elf_pl[np.isnan(elf_pl)] = 0
+		print("--- %s seconds ---" % (time.time() - start_time))
 		self._convert2ru()
 		return elf_pl + elf_se
 	
