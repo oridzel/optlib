@@ -702,7 +702,7 @@ class Material:
 			val = optimize.root_scalar(self._epsilon_real_lindhard,args=(q,omega),bracket=[x[i-1], x[i]], method='brentq').root
 		return val
 	
-	def _f_fzero(t):
+	def _f_fzero(self,t):
 		if np.abs(t) == 1:
 			val = 0
 		else:
@@ -727,7 +727,7 @@ class Material:
 				elif u/(z+1) > 100:
 					eps_real = 1 - 16/(3*kf*math.pi*x**2) - 256*z**2/(5*kf*math.pi*x**4) - 256*z**4/(3*kf*math.pi*x**4)
 				else:
-					eps_real = 1 + 1/(math.pi*kf*z**2)*(1/2 + 1/(8*z)*(self._f_fzero(z - u) + self._f_fzero(z+u)))
+					eps_real = 1 + 1/(math.pi*kf*z**2)*(1/2 + 1/(8*z)*(self._f_fzero(z - u) + self._f_fzero(z + u)))
 			
 			return eps_real
 
