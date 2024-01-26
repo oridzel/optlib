@@ -617,6 +617,43 @@ class Material:
 		self._convert2ru()
 		return elf_pl + elf_se
 	
+	def calculate_fpa_elf_for_diimfp(self):
+		self._convert2au()
+		elf_pl = np.squeeze(np.zeros((self.eloss.shape[0], self.size_q)))
+		elf_se = np.squeeze(np.zeros((self.eloss.shape[0], self.size_q)))
+		omega_0 = np.zeros_like(self.eloss)
+		omega_pl = np.linspace(1e-5,2000,200001)/h2ev
+
+		start_time = time.time()
+		for k in range(self.size_q):
+			epsilon = self._calculate_lindhard_epsilon(self.q[:,k],omega_pl)
+			q_m = self._q_minus(omega_pl)
+			q_p = self._q_plus(omega_pl)
+			qq = self.q[:,k]
+			se = self._g(omega_pl,self.optical_omega,self.optical_elf) * (-1/epsilon).imag * np.heaviside(q_p - qq,1) * np.heaviside(qq - q_m,1)
+			se[np.isnan(se)] = 0
+
+			for i in range(len(self.eloss)):
+				try:
+					if self.q[i,k] == 0:
+						interval = [0, self.eloss[i] + 0.1]
+					else:
+						interval = [0, min(self.eloss[i],np.abs(self.q[i,k]/2 - self.eloss[i]/self.q[i,k]))]
+					omega_0[i] = optimize.root_scalar(self._epsilon_real_lindhard,args=(self.q[i,k],self.eloss[i]),bracket=interval, method='brentq').root
+				except:
+					omega_0[i] = self._find_zero(omega_pl,epsilon.real[i,:],self.q[i,k],self.eloss[i])
+
+			g_coef = self._g(omega_0,self.optical_omega,self.optical_elf)
+			de_eps_real = np.abs(self._calculate_linhard_derivative(self.q[:,k],omega_0))
+			elf_pl[:,k] = g_coef * math.pi/de_eps_real * np.heaviside(self._q_minus(omega_0) - self.q[:,k],1)
+			
+			elf_se[:,k] = np.trapz(se,omega_pl)
+
+		elf_pl[np.isnan(elf_pl)] = 0
+		print("--- %s seconds ---" % (time.time() - start_time))
+		self._convert2ru()
+		return elf_pl + elf_se
+	
 	def _calculate_linhard_derivative(self,q,omega_pl):
 		kf = self._k_f(omega_pl)
 		x = 2*self.eloss / kf**2
@@ -677,6 +714,46 @@ class Material:
 			
 			eps_real = np.where(u < 0.01,1 + 1/(math.pi*kf*z**2)*(1/2 + 1/(4*z)*((1-z**2-u**2)*np.log(np.abs((z+1)/(z-1))) + (z**2-u**2-1)*2*u**2*z/(z**2-1)**2)),eps_real)
 			eps_imag = np.where(u < 0.01,u/(q*z),eps_imag)
+		
+			eps_real = np.where(u/(z+1) > 100,1 - 16/(3*kf*math.pi*x**2) - 256*z**2/(5*kf*math.pi*x**4) - 256*z**4/(3*kf*math.pi*x**4),eps_real)
+			eps_imag = np.where(u/(z+1) > 100,0,eps_imag)
+				
+			eps_real = np.where(x == 0,1,eps_real)
+			eps_imag = np.where(x == 0,0,eps_imag)
+			
+			ind = np.logical_and(z == 0,x != 0)
+			eps_real = np.where(ind,1 - 16/(3*kf*math.pi*x**2),eps_real)
+			eps_imag = np.where(ind,0,eps_imag)
+
+		return eps_real + 1j * eps_imag
+	
+	def _calculate_lindhard_epsilon(self,q,omega_pl):
+		kf = self._k_f(omega_pl)
+		x = 2*self.eloss[:,np.newaxis] / kf**2
+		x[np.isnan(x)] = 0
+		z = q[:,np.newaxis] / (2*kf)
+		z[np.isnan(z)] = 0
+		
+		if np.all(x == 0):
+			eps_real = np.ones_like(x)
+			eps_imag = np.zeros_like(x)
+		elif np.all(z == 0):
+			eps_real = 1 - 16/(3*kf*math.pi*x**2)
+			eps_imag = np.zeros_like(x)
+		else:
+			u = x / (4*z)
+			coef = 1/(8*kf*z**3)
+		
+			ind = np.logical_not(u < 0.01,u/(z+1) > 100)
+			eps_real = np.where(ind,1 + 1/(math.pi*kf*z**2)*(1/2 + 1/(8*z)*(self._f(z - u) + self._f(z+u))),1)
+			ind_1 = np.logical_and(x > 0,x < 4*z*(1-z))
+			ind_2 = np.logical_and(x > np.abs(4*z*(1-z)),x < 4*z*(1+z))
+			eps_imag = np.zeros_like(eps_real)     
+			eps_imag = np.where(ind_1,coef*x,eps_imag)
+			eps_imag = np.where(ind_2,coef*(1 - (z-u)**2),eps_imag)
+			
+			eps_real = np.where(u < 0.01,1 + 1/(math.pi*kf*z**2)*(1/2 + 1/(4*z)*((1-z**2-u**2)*np.log(np.abs((z+1)/(z-1))) + (z**2-u**2-1)*2*u**2*z/(z**2-1)**2)),eps_real)
+			eps_imag = np.where(u < 0.01,u/(q[:,np.newaxis]*z),eps_imag)
 		
 			eps_real = np.where(u/(z+1) > 100,1 - 16/(3*kf*math.pi*x**2) - 256*z**2/(5*kf*math.pi*x**4) - 256*z**4/(3*kf*math.pi*x**4),eps_real)
 			eps_imag = np.where(u/(z+1) > 100,0,eps_imag)
@@ -829,7 +906,10 @@ class Material:
 			if self.optical_omega is None and self.optical_elf is None:
 				raise InputError("Provide optical data: self.optical_omega and self.optical_elf")
 			else:
-				elf = self.calculate_fpa_elf()
+				if self.size_q > 1:
+					elf = self.calculate_fpa_elf_for_diimfp()
+				else:
+					elf = self.calculate_fpa_elf()
 		else:
 			elf = (-1/self.epsilon).imag
 			elf[np.isnan(elf)] = 1e-5
