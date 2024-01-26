@@ -630,7 +630,7 @@ class Material:
 			q_m = self._q_minus(omega_pl)
 			q_p = self._q_plus(omega_pl)
 			qq = self.q[:,k]
-			se = self._g(omega_pl,self.optical_omega,self.optical_elf) * (-1/epsilon).imag * np.heaviside(q_p - qq,1) * np.heaviside(qq - q_m,1)
+			se = self._g(omega_pl,self.optical_omega,self.optical_elf) * (-1/epsilon).imag * np.heaviside(q_p - qq[:,np.newaxis],1) * np.heaviside(qq[:,np.newaxis] - q_m,1)
 			se[np.isnan(se)] = 0
 
 			for i in range(len(self.eloss)):
