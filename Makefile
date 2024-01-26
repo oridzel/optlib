@@ -1,3 +1,3 @@
 init:
-	/usr/local/bin/pip3.10 install -r requirements.txt
-	/usr/local/bin/python3.10 setup.py install
+	python3 install -r requirements.txt
+	python3 setup.py install

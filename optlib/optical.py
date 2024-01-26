@@ -9,6 +9,8 @@ import os
 import time
 from tqdm import tqdm
 import re
+from scipy.interpolate import interp1d
+from scipy import optimize
 
 hc = 12.3981756608  # planck constant times velocity of light keV Angstr
 r0 = 2.8179403227e-15
@@ -217,14 +219,14 @@ class Material:
 		elif self.oscillators.model == 'MLL':
 			self._epsilon = self.calculate_mll_dielectric_function()
 		else:
-			raise InputError("Invalid model name. The valid model names are: Drude, DrudeLindhard, Mermin and MLL")
+			raise InputError("Invalid model name. The valid model names are: Drude, DrudeLindhard, Mermin, and MLL")
 
 	def calculate_drude_dielectric_function(self):
 		self._convert2au()
 
 		for i in range(len(self.oscillators.A)):
 			eps_drude_real, eps_drude_imag = self._calculate_drude_oscillator(
-				self.oscillators.omega[i], self.oscillators.gamma[i], self.oscillators.alpha[i])
+				self.oscillators.omega[i], self.oscillators.gamma[i], self.oscillators.alpha)
 			if i == 0:
 				eps_real = self.oscillators.eps_b * np.ones_like(eps_drude_real)
 				eps_imag = np.zeros_like(eps_drude_imag)
@@ -288,7 +290,7 @@ class Material:
 
 		for i in range(len(self.oscillators.A)):
 			oneover_eps = self._calculate_dl_oscillator(
-				self.oscillators.omega[i], self.oscillators.gamma[i], self.oscillators.alpha[i])
+				self.oscillators.omega[i], self.oscillators.gamma[i], self.oscillators.alpha)
 			sum_oneover_eps += self.oscillators.A[i] * (oneover_eps - complex(1))
 
 		sum_oneover_eps += complex(1)
@@ -573,6 +575,167 @@ class Material:
 		reres[x != 0] = math.pi / 4.0 - 0.5 * np.arctan( (1 - x**2 - y**2) / (2.0 * x) )
 		reres[np.logical_and(x > 0, x < 0)] = math.pi / 2.0
 		return complex_array(reres.real, imres.imag)
+	
+	def lindhard_epsilon(omega,q,omega_pl):
+		k_f = np.sqrt( (3*math.pi/4)**(1/3) * omega_pl**(2/3) )
+		u = omega[:,np.newaxis,np.newaxis]/(q[:,np.newaxis]*k_f)
+		z = q[:,np.newaxis]/(2*k_f)
+		chi = np.sqrt(1/(math.pi*k_f))
+
+		f_1 = 1/2 + 1/(8*z)*(g(z-u)+g(z+u))
+		f_2 = math.pi/2*u*np.heaviside(1-z-u,0.5) + math.pi/(8*z)*(1-(z-u)**2)*np.heaviside(1-np.abs(z-u),0.5)*np.heaviside(z+u-1,0.5)
+		return 1 + chi**2/z**2*(f_1+f_2*1j)
+
+	def g(x):
+		return (1-x**2)*np.log(np.abs(1+x)/np.abs(1-x))
+	
+	def calculate_fpa_elf(self):
+		self._convert2au()
+		elf_pl = np.squeeze(np.zeros((self.eloss.shape[0], self.size_q)))
+		elf_se = np.squeeze(np.zeros((self.eloss.shape[0], self.size_q)))
+		omega_0 = np.zeros_like(self.eloss)
+		omega_pl = np.linspace(1e-5,2000,200001)/h2ev
+
+		for k in range(self.size_q):
+			epsilon = self.calculate_lindhard_dielectric_function(self.q[k],omega_pl)
+			q_m = self._q_minus(omega_pl)
+			q_p = self._q_plus(omega_pl)
+			se = self._g(omega_pl,self.optical_omega,self.optical_elf) * (-1/epsilon).imag * np.heaviside(q_p - self.q[k],1) * np.heaviside(self.q[k] - q_m,1)
+			se[np.isnan(se)] = 0
+
+			for i in range(len(self.eloss)):
+				try:
+					if self.q[k] == 0:
+						interval = [0, self.eloss[i] + 0.1]
+					else:
+						interval = [0, min(self.eloss[i],np.abs(self.q[k]/2 - self.eloss[i]/self.q[k]))]
+					omega_0[i] = optimize.root_scalar(self._epsilon_real_lindhard,args=(self.q[k],self.eloss[i]),bracket=interval, method='brentq').root
+				except:
+					omega_0[i] = self._find_zero(omega_pl,epsilon.real[i,:],self.q[k],self.eloss[i])
+
+			g_coef = self._g(omega_0,self.optical_omega,self.optical_elf)
+			de_eps_real = np.abs(self._calculate_linhard_derivative(q[k],self.eloss,omega_0))
+			elf_pl[:,k] = g_coef * math.pi/de_eps_real * np.heaviside(self._q_minus(omega_0) - self.q[k],1)
+			
+			elf_se[:,k] = np.trapz(se,omega_pl)
+
+		elf_pl[np.isnan(elf_pl)] = 0
+		self._convert2ru()
+		return elf_pl + elf_se
+	
+	def _calculate_linhard_derivative(self,omega_pl):
+		kf = self._k_f(omega_pl)
+		x = 2*self.eloss / kf**2
+		z = self.q / (2*kf)
+		u = x / (4*z)
+		y_plus = z + u
+		y_minus = z - u
+
+		ind = np.logical_not(x > 100*z,z > 100*x)
+		de_eps_real = np.where(ind,(np.log(np.abs((y_minus+1)/(y_minus-1))) + np.log(np.abs((y_plus+1)/(y_plus-1))))/(4*kf**(5/2)*math.sqrt(3*math.pi)*z**3),0)
+		a = z / x
+		de_eps_real = np.where(x > 100*z,16/(kf**(5/2)*math.sqrt(3*math.pi)*x**2)*(-1 - 16*a**2 - 16*a**4*(16 + x**2) - 512/3*a**6*(24 + 5*x**2)),de_eps_real)
+		b = x / (z*(z**1-1))
+		de_eps_real = np.where(z > 100*x,(np.log(((z+1)/(z-1))**2) + 4*z*b**2*(1 + (1+z**2)*b**2 + 1/3*(3+z**2)*(1+3*z**2)*b**4))/(4*kf**(5/2)*math.sqrt(3*math.pi)*z**3),de_eps_real)
+		return de_eps_real
+	
+	def _g(self,omega_pl,opt_omega,opt_elf):
+		return 2/(math.pi*omega_pl)*np.interp(omega_pl*h2ev,opt_omega,opt_elf)
+	
+	def _q_plus(self,omega_pl):
+		kf = self._k_f(omega_pl)
+		return kf + np.sqrt(kf**2 + 2*self.eloss[:,np.newaxis])
+
+	def _q_minus(self,omega_pl):
+		kf = self._k_f(omega_pl)
+		if kf.shape == self.eloss.shape:
+			return -kf + np.sqrt(kf**2 + 2*self.eloss)
+		else:
+			return -kf + np.sqrt(kf**2 + 2*self.eloss[:,np.newaxis])
+
+	def _k_f(self,omega_pl):
+		return (3*math.pi/4)**(1/3)*omega_pl**(2/3)
+	
+	def calculate_lindhard_dielectric_function(self,q,omega_pl):
+		kf = self._k_f(omega_pl)
+		x = 2*self.eloss[:,np.newaxis] / kf**2
+		x[np.isnan(x)] = 0
+		z = q / (2*kf)
+		z[np.isnan(z)] = 0
+		
+		if np.all(x == 0):
+			eps_real = np.ones_like(x)
+			eps_imag = np.zeros_like(x)
+		elif all(z == 0):
+			eps_real = 1 - 16/(3*kf*math.pi*x**2)
+			eps_imag = np.zeros_like(x)
+		else:
+			u = x / (4*z)
+			coef = 1/(8*kf*z**3)
+		
+			ind = np.logical_not(u < 0.01,u/(z+1) > 100)
+			eps_real = np.where(ind,1 + 1/(math.pi*kf*z**2)*(1/2 + 1/(8*z)*(self._f(z - u) + self._f(z+u))),1)
+			ind_1 = np.logical_and(x > 0,x < 4*z*(1-z))
+			ind_2 = np.logical_and(x > np.abs(4*z*(1-z)),x < 4*z*(1+z))
+			eps_imag = np.zeros_like(eps_real)     
+			eps_imag = np.where(ind_1,coef*x,eps_imag)
+			eps_imag = np.where(ind_2,coef*(1 - (z-u)**2),eps_imag)
+			
+			eps_real = np.where(u < 0.01,1 + 1/(math.pi*kf*z**2)*(1/2 + 1/(4*z)*((1-z**2-u**2)*np.log(np.abs((z+1)/(z-1))) + (z**2-u**2-1)*2*u**2*z/(z**2-1)**2)),eps_real)
+			eps_imag = np.where(u < 0.01,u/(q*z),eps_imag)
+		
+			eps_real = np.where(u/(z+1) > 100,1 - 16/(3*kf*math.pi*x**2) - 256*z**2/(5*kf*math.pi*x**4) - 256*z**4/(3*kf*math.pi*x**4),eps_real)
+			eps_imag = np.where(u/(z+1) > 100,0,eps_imag)
+				
+			eps_real = np.where(x == 0,1,eps_real)
+			eps_imag = np.where(x == 0,0,eps_imag)
+			
+			ind = np.logical_and(z == 0,x != 0)
+			eps_real = np.where(ind,1 - 16/(3*kf*math.pi*x**2),eps_real)
+			eps_imag = np.where(ind,0,eps_imag)
+
+		return eps_real + 1j * eps_imag
+
+	def _f(self,t):
+		return np.where(np.abs(t) != 1,(1 - t**2)*np.log(np.abs((t+1)/(t-1))),0)
+	
+	def _find_zero(self,x,y,q,omega):
+		val = 0
+		if any(y < 0):
+			ind = np.where(y < 0)
+			i = ind[0][0]
+			# val = x[i-1] + (x[i] - x[i-1])/2
+			val = optimize.root_scalar(self._epsilon_real_lindhard,args=(q,omega),bracket=[x[i-1], x[i]], method='brentq').root
+		return val
+	
+	def _f_fzero(t):
+		if np.abs(t) == 1:
+			val = 0
+		else:
+			val = (1 - t**2)*np.log(np.abs((t+1)/(t-1)))
+		return val
+	
+	def _epsilon_real_lindhard(self,omega_pl,q,omega):
+		if omega_pl == 0:
+			return 1
+		else:
+			kf = self._k_f(omega_pl)
+			x = 2*omega / kf**2
+			z = q / (2*kf)    
+			if x == 0:
+				eps_real = 1
+			elif z == 0:
+				eps_real = 1 - 16/(3*kf*math.pi*x**2)
+			else:
+				u = x / (4*z)
+				if u < 0.01:
+					eps_real = 1 + 1/(math.pi*kf*z**2)*(1/2 + 1/(4*z)*((1-z**2-u**2)*np.log(np.abs((z+1)/(z-1))) + (z**2-u**2-1)*2*u**2*z/(z**2-1)**2))
+				elif u/(z+1) > 100:
+					eps_real = 1 - 16/(3*kf*math.pi*x**2) - 256*z**2/(5*kf*math.pi*x**4) - 256*z**4/(3*kf*math.pi*x**4)
+				else:
+					eps_real = 1 + 1/(math.pi*kf*z**2)*(1/2 + 1/(8*z)*(self._f_fzero(z - u) + self._f_fzero(z+u)))
+			
+			return eps_real
 
 	def _convert2au(self):
 		if self.oscillators.model == 'Drude':
@@ -668,8 +831,14 @@ class Material:
 		return henke
 
 	def calculate_elf(self):
-		elf = (-1/self.epsilon).imag
-		elf[np.isnan(elf)] = 1e-5
+		if self.oscillators.model == 'FPA':
+			if self.optical_omega is None and self.optical_elf is None:
+				raise InputError("Provide optical data: self.optical_omega and self.optical_elf")
+			else:
+				elf = self.calculate_fpa_elf()
+		else:
+			elf = (-1/self.epsilon).imag
+			elf[np.isnan(elf)] = 1e-5
 		self.elf = elf
 
 	def calculate_surface_elf(self):
@@ -926,7 +1095,47 @@ class Material:
 		self.sep = np.trapz(self.dsep, eloss, axis=0)
 
 
-	def calculate_diimfp(self, e0, de = 0.5, nq = 10, normalised = True, is_metal = True):
+	def calculate_diimfp_ang(self, e0, de = 0.5, is_metal = True):
+		if is_metal:
+			self.eloss = linspace(1e-5, e0 - self.e_fermi, de)
+		else:
+			if e0 < 2*self.e_gap + self.width_of_the_valence_band:
+				raise InputError("Please specify the value of energy greater than the 2*band gap + the width of the valence band")
+			else:
+				e0 -= self.e_gap
+				self.eloss = linspace(self.e_gap, e0 - self.width_of_the_valence_band, de)
+
+		theta = np.linspace(0,math.pi,100)
+		q = 4*e0/h2ev - 2*np.expand_dims(self.eloss/h2ev,axis=1) - 4*np.sqrt(e0/h2ev*(e0/h2ev-np.expand_dims(self.eloss/h2ev,axis=1)))*np.cos(theta.reshape((1,-1)))
+		self.q = q
+		if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
+			self.q[self.q == 0] = 0.01
+		self.calculate_elf()
+		integrand = self.elf * 1/q * np.sqrt(e0/h2ev*(e0/h2ev-np.expand_dims(self.eloss/h2ev,axis=1))) * np.sin(theta.reshape((1,-1)))
+		res = 1/(math.pi * (e0/h2ev)) * 2*math.pi * np.trapz(integrand * np.sin(theta.reshape((1,-1))) * (1 - np.cos(theta.reshape((1,-1)))),theta,axis = 1)
+		diimfp = res / (h2ev * a0)
+		self.diimfp = diimfp
+		self.diimfp_e = self.eloss
+		self.diimfp_th = 1/(math.pi * (e0/h2ev)) * integrand
+		self.theta = theta
+		self.iimfp = res
+
+
+	def calculate_trimfp(self, energy, de=0.5, is_metal = True):
+		if is_metal and self.e_fermi == 0:
+			raise InputError("Please specify the value of the Fermi energy e_fermi")
+		elif not is_metal and self.e_gap == 0 and self.width_of_the_valence_band == 0:
+			raise InputError("Please specify the values of the band gap e_gap and the width of the valence band width_of_the_valence_band")
+		imfp = np.zeros_like(energy)
+		for i in range(energy.shape[0]):
+			print(energy[i])
+			self.calculate_diimfp_ang(energy[i], de, is_metal = is_metal)
+			imfp[i] = 1/np.trapz(self.iimfp, self.diimfp_e/h2ev)
+		self.imfp = imfp*a0
+		self.imfp_e = energy
+
+
+	def calculate_diimfp(self, e0, de = 0.5, nq = 100, normalised = True, is_metal = True):
 		old_eloss = self.eloss
 		old_q = self.q
 		old_e0 = e0
@@ -956,14 +1165,11 @@ class Material:
 			qm = np.log( np.sqrt( e0/h2ev * ( 2 + e0/h2ev/(c**2) ) ) - np.sqrt( ( e0/h2ev - self.eloss/h2ev ) * ( 2 + (e0/h2ev - self.eloss/h2ev)/(c**2) ) ) )
 			qp = np.log( np.sqrt( e0/h2ev * ( 2 + e0/h2ev/(c**2) ) ) + np.sqrt( ( e0/h2ev - self.eloss/h2ev ) * ( 2 + (e0/h2ev - self.eloss/h2ev)/(c**2) ) ) )
 			q = np.linspace(qm, qp, nq, axis = 1)
-			self.q = np.exp(q)
 			if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
-				self.q[self.q == 0] = 0.01
+				q[q == 0] = 0.01
+			self.q = np.exp(q)/a0
 			self.calculate_elf()
 			integrand = self.elf
-			# integrand[self.q == 0] = 1e-5
-			# if (self.oscillators.model == 'Mermin' or self.oscillators.model == 'MLL'):
-			# 	integrand[self.q == 0.01] = 1e-5
 			iimfp = rel_coef * 1/(math.pi * (e0/h2ev)) * np.trapz( integrand, q, axis = 1 )
 			diimfp = iimfp / (h2ev * a0)
 
@@ -1070,7 +1276,7 @@ class Material:
 
 			fd.close()
 
-			subprocess.run('/Users/olgaridzel/Research/ESCal/src/MaterialDatabase/Data/Elsepa/elsepa-2020/elsepa-2020 < lub.in',shell=True,capture_output=True)
+			subprocess.run('/Users/olgaridzel/olgaridzel/dev/elsepa-2020/elsepa < lub.in',shell=True,capture_output=True)
 
 			with open('dcs_' + '{:1.3e}'.format(round(self.e0)).replace('.','p').replace('+0','0') + '.dat','r') as fd:
 				lines = fd.readlines()
