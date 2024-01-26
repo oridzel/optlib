@@ -607,7 +607,7 @@ class Material:
 					omega_0[i] = self._find_zero(omega_pl,epsilon.real[i,:],self.q[k],self.eloss[i])
 
 			g_coef = self._g(omega_0,self.optical_omega,self.optical_elf)
-			de_eps_real = np.abs(self._calculate_linhard_derivative(self.q[k],self.eloss,omega_0))
+			de_eps_real = np.abs(self._calculate_linhard_derivative(self.q[k],omega_0))
 			elf_pl[:,k] = g_coef * math.pi/de_eps_real * np.heaviside(self._q_minus(omega_0) - self.q[k],1)
 			
 			elf_se[:,k] = np.trapz(se,omega_pl)
@@ -617,10 +617,10 @@ class Material:
 		self._convert2ru()
 		return elf_pl + elf_se
 	
-	def _calculate_linhard_derivative(self,omega_pl):
+	def _calculate_linhard_derivative(self,q,omega_pl):
 		kf = self._k_f(omega_pl)
 		x = 2*self.eloss / kf**2
-		z = self.q / (2*kf)
+		z = q / (2*kf)
 		u = x / (4*z)
 		y_plus = z + u
 		y_minus = z - u
