@@ -581,12 +581,12 @@ class Material:
 	def g(x):
 		return (1-x**2)*np.log(np.abs(1+x)/np.abs(1-x))
 	
-	def calculate_fpa_elf(self):
+	def calculate_fpa_elf(self, omega_pl_max = 5000):
 		self._convert2au()
 		elf_pl = np.squeeze(np.zeros((self.eloss.shape[0], self.size_q)))
 		elf_se = np.squeeze(np.zeros((self.eloss.shape[0], self.size_q)))
 		omega_0 = np.zeros_like(self.eloss)
-		omega_pl = np.linspace(1e-5,2000,200001)/h2ev
+		omega_pl = linspace(1e-5,omega_pl_max,0.01)/h2ev
 
 		start_time = time.time()
 		for k in range(self.size_q):
