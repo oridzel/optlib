@@ -156,7 +156,7 @@ class Material:
 		self.emfp = None
 		self.sigma_el = None
 		self.q_dependency = None
-		self._q = q
+		self.q = q
 		self.use_kk_constraint = False
 		self.use_henke_for_ne = False
 		self.electron_density_henke = 0
@@ -906,7 +906,7 @@ class Material:
 			if self.optical_omega is None and self.optical_elf is None:
 				raise InputError("Provide optical data: self.optical_omega and self.optical_elf")
 			else:
-				if self.size_q > 1:
+				if len(self.q.shape) > 1:
 					elf = self.calculate_fpa_elf_for_diimfp()
 				else:
 					elf = self.calculate_fpa_elf()
