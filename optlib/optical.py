@@ -10,6 +10,7 @@ import time
 from tqdm import tqdm
 import re
 from scipy import optimize
+from scipy.interpolate import RectBivariateSpline
 from optlib.constants import *
 
 def wavelength2energy(wavelength):
@@ -1263,6 +1264,25 @@ class Material:
 		self.diimfp_e = self.eloss
 		self.e0 = old_e0
 		self.eloss = old_eloss
+
+
+	def diimfp_interp_fpa(self,e,rbs,nq = 100,de = 0.5):
+		self.diimfp_e = linspace(0,e - self.e_fermi,de)
+		e0 = e/h2ev
+		omega = self.diimfp_e/h2ev
+		c = 137.036
+		qm = np.log( np.sqrt( e0 * ( 2 + e0/(c**2) ) ) - np.sqrt( ( e0 - omega ) * ( 2 + (e0 - omega)/(c**2) ) ) )
+		qp = np.log( np.sqrt( e0 * ( 2 + e0/(c**2) ) ) + np.sqrt( ( e0 - omega ) * ( 2 + (e0 - omega)/(c**2) ) ) )
+		q = np.linspace(qm, qp, nq, axis = 1)
+		q_ru = np.exp(q)/a0
+		q_ru[np.isnan(q_ru)] = 0
+		
+		eloss_ru = np.transpose(np.tile(self.diimfp_e,(nq,1)))
+		elf_interp = rbs(eloss_ru,q_ru, grid=False)
+		
+		rel_coef = ((1 + e0/(c**2))**2) / (1 + e0/(2*c**2))
+		self.iimfp = rel_coef * 1/(math.pi*e0) * np.trapz( elf_interp, q, axis = 1 )
+		self.diimfp = self.iimfp / (h2ev * a0)
 
 
 	def calculate_imfp(self, energy, de=0.5, nq=10):
