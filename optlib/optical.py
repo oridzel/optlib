@@ -157,7 +157,7 @@ class Material:
 		self.emfp = None
 		self.sigma_el = None
 		self.q_dependency = None
-		self._q = q
+		self.q = q
 		self.use_kk_constraint = False
 		self.use_henke_for_ne = False
 		self.electron_density_henke = 0
@@ -582,12 +582,12 @@ class Material:
 	def g(x):
 		return (1-x**2)*np.log(np.abs(1+x)/np.abs(1-x))
 	
-	def calculate_fpa_elf(self):
+	def calculate_fpa_elf(self, omega_pl_max = 5000):
 		self._convert2au()
 		elf_pl = np.squeeze(np.zeros((self.eloss.shape[0], self.size_q)))
 		elf_se = np.squeeze(np.zeros((self.eloss.shape[0], self.size_q)))
 		omega_0 = np.zeros_like(self.eloss)
-		omega_pl = np.linspace(1e-5,2000,200001)/h2ev
+		omega_pl = linspace(1e-5,omega_pl_max,0.01)/h2ev
 
 		start_time = time.time()
 		for k in range(self.size_q):
@@ -618,12 +618,12 @@ class Material:
 		self._convert2ru()
 		return elf_pl + elf_se
 	
-	def calculate_fpa_elf_for_diimfp(self):
+	def calculate_fpa_elf_for_diimfp(self, omega_pl_max = 5000):
 		self._convert2au()
 		elf_pl = np.squeeze(np.zeros((self.eloss.shape[0], self.size_q)))
 		elf_se = np.squeeze(np.zeros((self.eloss.shape[0], self.size_q)))
 		omega_0 = np.zeros_like(self.eloss)
-		omega_pl = np.linspace(1e-5,2000,200001)/h2ev
+		omega_pl = linspace(1e-5,omega_pl_max,0.01)/h2ev
 
 		start_time = time.time()
 		for k in range(self.size_q):
@@ -907,7 +907,7 @@ class Material:
 			if self.optical_omega is None and self.optical_elf is None:
 				raise InputError("Provide optical data: self.optical_omega and self.optical_elf")
 			else:
-				if self.size_q > 1:
+				if len(self.q.shape) > 1:
 					elf = self.calculate_fpa_elf_for_diimfp()
 				else:
 					elf = self.calculate_fpa_elf()
