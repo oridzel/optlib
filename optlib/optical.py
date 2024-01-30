@@ -618,7 +618,7 @@ class Material:
 		self._convert2ru()
 		return elf_pl + elf_se
 	
-	def calculate_fpa_elf_for_diimfp(self, omega_pl_max = 5000):
+	def calculate_fpa_elf_for_diimfp(self, omega_pl_max = 2000):
 		self._convert2au()
 		elf_pl = np.squeeze(np.zeros((self.eloss.shape[0], self.size_q)))
 		elf_se = np.squeeze(np.zeros((self.eloss.shape[0], self.size_q)))
@@ -1281,8 +1281,13 @@ class Material:
 		elf_interp = rbs(eloss_ru,q_ru, grid=False)
 		
 		rel_coef = ((1 + e0/(c**2))**2) / (1 + e0/(2*c**2))
-		self.iimfp = rel_coef * 1/(math.pi*e0) * np.trapz( elf_interp, q, axis = 1 )
-		self.diimfp = self.iimfp / (h2ev * a0)
+		iimfp = rel_coef * 1/(math.pi*e0) * np.trapz( elf_interp, q, axis = 1 )
+		diimfp = iimfp / (h2ev * a0)
+		diimfp[np.isnan(diimfp)] = 1e-5
+		iimfp[np.isnan(iimfp)] = 1e-5
+		self.diimfp = diimfp
+		self.iimfp = iimfp
+
 
 
 	def calculate_imfp(self, energy, de=0.5, nq=10):
