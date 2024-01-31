@@ -1282,11 +1282,42 @@ class Material:
 		
 		rel_coef = ((1 + e0/(c**2))**2) / (1 + e0/(2*c**2))
 		iimfp = rel_coef * 1/(math.pi*e0) * np.trapz( elf_interp, q, axis = 1 )
-		diimfp = iimfp / (h2ev * a0)
+		diimfp = iimfp / (h2ev * a0) # now in 1/(eV A)
 		diimfp[np.isnan(diimfp)] = 1e-5
 		iimfp[np.isnan(iimfp)] = 1e-5
 		self.diimfp = diimfp
 		self.iimfp = iimfp
+
+
+	def diimfp_interp_fpa_mermin(self,e,rbs,nq = 100,de = 0.5):
+		self.diimfp_e = linspace(0,e - self.e_fermi,de)
+		e0 = e/h2ev
+		omega = self.diimfp_e/h2ev
+		c = 137.036
+		qm = np.log( np.sqrt( e0 * ( 2 + e0/(c**2) ) ) - np.sqrt( ( e0 - omega ) * ( 2 + (e0 - omega)/(c**2) ) ) )
+		qp = np.log( np.sqrt( e0 * ( 2 + e0/(c**2) ) ) + np.sqrt( ( e0 - omega ) * ( 2 + (e0 - omega)/(c**2) ) ) )
+		q = np.linspace(qm, qp, nq, axis = 1)
+		q_ru = np.exp(q)/a0
+		q_ru[np.isnan(q_ru)] = 0
+		
+		eloss_ru = np.transpose(np.tile(self.diimfp_e,(nq,1)))
+		elf_interp = rbs(eloss_ru,q_ru, grid=False)
+
+		ind = np.isnan(elf_interp)
+		if np.any(ind):
+			self.q = np.exp(q)/a0
+			self.oscillators.model = 'Mermin'
+			self.calculate_elf()
+			elf_interp[ind] = self.elf[ind]
+		
+		rel_coef = ((1 + e0/(c**2))**2) / (1 + e0/(2*c**2))
+		iimfp = rel_coef * 1/(math.pi*e0) * np.trapz( elf_interp, q, axis = 1 )
+		diimfp = iimfp / (h2ev * a0) # now in 1/(eV A)
+		diimfp[np.isnan(diimfp)] = 1e-5
+		iimfp[np.isnan(iimfp)] = 1e-5
+		self.diimfp = diimfp
+		self.iimfp = iimfp
+		self.oscillators.model = 'FPA'
 
 
 
@@ -1344,12 +1375,9 @@ class Material:
 		end = lines[line].find(' cm**2')
 		return float(lines[line][start:end])*1e16
 
-	def calculate_elastic_properties(self, e0, mnucl,melec,mexch):
+	def calculate_elastic_properties(self,e0,mnucl,melec,mexch):
 		self.e0 = e0
 		sumweights = 0.0
-		self.decs_all = [None]*len(self.composition.elements)
-		self.sigma_el_all = [None]*len(self.composition.elements)
-		self.sigma_tr_all = [None]*len(self.composition.elements)
 		rmuf = 1
 
 		for i in range(len(self.composition.elements)):
@@ -1385,26 +1413,23 @@ class Material:
 				lines = fd.readlines()
 				result = [ line for line in lines if "Total elastic cross section = " in line]
 				self.sigma_el = float(re.findall(r"\d+\.\d+[E][-]\d+", result[0])[0])
-				self.sigma_el_all[i] = self.sigma_el
 				print("sigma_el = ",self.sigma_el)
 				self.emfp = 1/(self.sigma_el*1e16*self.atomic_density)
 				result = [ line for line in lines if "1st transport cross section = " in line]
 				self.sigma_tr = float(re.findall(r"\d+\.\d+[E][-]\d+", result[0])[0])
-				self.sigma_tr_all[i] = self.sigma_tr
 			
 			data = np.loadtxt('dcs_' + '{:1.3e}'.format(round(self.e0)).replace('.','p').replace('+0','0') + '.dat', comments="#")
 			if i == 0:
 				self.decs = np.zeros_like(data[:,0])
 				self.decs_a = np.zeros_like(data[:,0])
-			self.decs_theta = data[:,0]
+			self.decs_theta = np.deg2rad(data[:,0])
 			self.decs_mu = data[:,1]
-			self.decs_a += data[:,3]*self.composition.indices[i]
+			self.decs_a += data[:,3]*a0**2*self.composition.indices[i]
 			self.decs += data[:,2]*1e16*self.composition.indices[i]
-			self.decs_all[i] = data[:,3]
 			
 		self.decs_a /= sumweights
 		self.decs /= sumweights
-		self.norm_decs = self.decs / np.trapz(self.decs, self.decs_mu)
+		self.norm_decs = self.decs / np.trapz(self.decs, self.decs_theta)
 
 	def write_optical_data(self):
 		self.calculate_elf()
