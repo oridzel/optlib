@@ -1396,13 +1396,6 @@ class Material:
 			# fd.write('RMUF    0          muffin-tin radius (cm)                  [measured]\n')
 			fd.write('IELEC  -1          -1=electron, +1=positron                     [ -1]\n')
 			fd.write(f'MEXCH   {mexch}          V_ex (0=none, 1=FM, 2=TF, 3=RT)              [  1]\n')
-			# fd.write('MCPOL   2          V_cp (0=none, 1=B, 2=LDA)                    [  0]\n')
-			# fd.write('VPOLA  -1          atomic polarizability (cm^3)            [measured]\n')
-			# fd.write('VPOLB  -1          b_pol parameter                          [default]\n')
-			# fd.write('MABS    1          W_abs (0=none, 1=LDA-I, 2=LDA-II)            [  0]\n')
-			# fd.write('VABSA   2.0        absorption-potential strength, Aabs      [default]\n')
-			# fd.write('VABSD  -1.0        energy gap deLTA (eV)                    [default]\n')
-			# fd.write('IHe_fermi    2          high-E factorization (0=no, 1=yes, 2=Born)   [  1]\n')
 			fd.write(f'EV      {round(self.e0)}     kinetic energy (eV)                         [none]\n')
 
 			fd.close()
@@ -1412,11 +1405,11 @@ class Material:
 			with open('dcs_' + '{:1.3e}'.format(round(self.e0)).replace('.','p').replace('+0','0') + '.dat','r') as fd:
 				lines = fd.readlines()
 				result = [ line for line in lines if "Total elastic cross section = " in line]
-				self.sigma_el = float(re.findall(r"\d+\.\d+[E][-]\d+", result[0])[0])
+				self.sigma_el = float(re.findall(r"\d+\.\d+[E][+]\d+", result[0])[0])
 				print("sigma_el = ",self.sigma_el)
-				self.emfp = 1/(self.sigma_el*1e16*self.atomic_density)
-				result = [ line for line in lines if "1st transport cross section = " in line]
-				self.sigma_tr = float(re.findall(r"\d+\.\d+[E][-]\d+", result[0])[0])
+				self.emfp = 1/(self.sigma_el*a0**2*self.atomic_density)
+				# result = [ line for line in lines if "1st transport cross section = " in line]
+				# self.sigma_tr = float(re.findall(r"\d+\.\d+[E][-]\d+", result[0])[0])
 			
 			data = np.loadtxt('dcs_' + '{:1.3e}'.format(round(self.e0)).replace('.','p').replace('+0','0') + '.dat', comments="#")
 			if i == 0:
@@ -1424,8 +1417,8 @@ class Material:
 				self.decs_a = np.zeros_like(data[:,0])
 			self.decs_theta = np.deg2rad(data[:,0])
 			self.decs_mu = data[:,1]
-			self.decs_a += data[:,3]*a0**2*self.composition.indices[i]
-			self.decs += data[:,2]*1e16*self.composition.indices[i]
+			self.decs_a += data[:,3]*self.composition.indices[i]
+			self.decs += data[:,2]*self.composition.indices[i]
 			
 		self.decs_a /= sumweights
 		self.decs /= sumweights
