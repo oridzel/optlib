@@ -590,7 +590,7 @@ class Material:
 		omega_pl = linspace(1e-5,omega_pl_max,0.01)/h2ev
 
 		start_time = time.time()
-		for k in range(self.size_q):
+		for k in tqdm(range(self.size_q)):
 			epsilon = self.calculate_lindhard_dielectric_function(self.q[k],omega_pl)
 			q_m = self._q_minus(omega_pl)
 			q_p = self._q_plus(omega_pl)
