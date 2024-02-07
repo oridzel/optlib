@@ -42,16 +42,24 @@ class Sample:
             return 0
 
     def get_diimfp(self,energy):
-        eloss = np.linspace(0,energy - self.material_data['e_fermi'],self.material_data['diimfp'][:,1,1].shape[0])
+        if self.is_metal:
+            eloss = np.linspace(0,energy - self.material_data['e_fermi'],self.material_data['diimfp'][:,1,1].shape[0])
+        else:
+            eloss = np.linspace(self.material_data['e_gap'],energy - self.material_data['e_gap'] - self.material_data['e_vb'],self.material_data['diimfp'][:,1,1].shape[0])
         f_rbs = RectBivariateSpline(eloss,self.material_data['energy'], self.material_data['diimfp'][:,1,:])
         x,y = np.meshgrid(eloss,energy,indexing="ij")
         return eloss,np.squeeze(f_rbs(x,y, grid=False))
 
     def get_angular_iimfp(self,energy,eloss):
         theta = np.linspace(0,math.pi/2,100)
-        q_squared = 4*energy/h2ev - 2*eloss/h2ev - 4*np.sqrt(energy/h2ev*(energy - eloss)/h2ev)*np.cos(theta)
+        eloss /= h2ev
+        if self.is_metal:
+            energy /= h2ev
+        else:
+            energy = (energy - self.material_data['e_gap'])/h2ev
+        q_squared = 4*energy - 2*eloss - 4*np.sqrt(energy*(energy - eloss))*np.cos(theta)
         f_rbs = RectBivariateSpline(self.material_data['omega']/h2ev,self.material_data['q']*a0,self.material_data['elf'])
-        x,y = np.meshgrid(eloss/h2ev,np.sqrt(q_squared),indexing="ij")
+        x,y = np.meshgrid(eloss,np.sqrt(q_squared),indexing="ij")
         return theta,np.squeeze(1/(math.pi**2*q_squared)*np.sqrt(1 - eloss/energy)*f_rbs(x,y, grid=False))
 
     def get_decs(self,energy):
@@ -64,7 +72,10 @@ class Electron:
     
     def __init__(self,sample,energy,cb_ref,save_coord,xyz,uvw,gen,se,ind):
         self.sample = sample
-        self.inner_potential = self.sample.material_data['e_fermi'] + self.sample.material_data['work_function']
+        if self.sample.material_data.is_metal:
+            self.inner_potential = self.sample.material_data['e_fermi'] + self.sample.material_data['work_function']
+        else:
+            self.inner_potential = self.sample.material_data['e_vb'] + self.sample.material_data['e_gap'] + self.sample.material_data['affinity']
         self.conduction_band_reference = cb_ref
         self.save_coordinates = save_coord
         self.xyz = xyz
@@ -102,14 +113,17 @@ class Electron:
 
     @property
     def iemfp(self):
-        return 1/self.sample.get_emfp(self.energy)
+        if self.sample.material_data.is_metal:
+            return 1/self.sample.get_emfp(self.energy)
+        else:
+            return 1/self.sample.get_emfp(self.energy - self.sample.material_data['e_gap'] - self.sample.material_data['e_vb'])
 
     @property
     def iphmfp(self):
         if self.sample.is_metal:
             return 0
         else:
-            return 1/self.sample.get_phmfp(self.energy)
+            return 1/self.sample.get_phmfp(self.energy - self.sample.material_data['e_gap'] - self.sample.material_data['e_vb'])
 
     @property
     def itmfp(self):
@@ -194,17 +208,35 @@ class Electron:
             self.is_dead()
             if not self.dead:
                 self.feg_dos()
-                theta,angdist = self.sample.get_angular_iimfp(self.energy + self.energy_loss,self.energy_loss)
-                cumdiimfp = integrate.cumtrapz(angdist*np.sin(theta),theta,initial=0)
-                self.deflection[0] = np.interp(random.random()*cumdiimfp[-1],cumdiimfp,theta)
-                if self.deflection[0] == np.nan:
-                    print("nan")
-                    self.deflection[0] = math.asin(math.sqrt(self.energy_loss/(self.energy + self.energy_loss)))
-                self.uvw = self.update_direction(self.uvw,self.deflection,0)
-                # self.uvw = self.change_direction(self.uvw,self.deflection)
+                if self.sample.material_data.is_metal:
+                    min_energy = 1
+                else:
+                    min_energy = self.sample.material_data['e_gap']
+                if self.energy > min_energy:
+                    theta,angdist = self.sample.get_angular_iimfp(self.energy + self.energy_loss,self.energy_loss)
+                    cumdiimfp = integrate.cumtrapz(angdist*np.sin(theta),theta,initial=0)
+                    self.deflection[0] = np.interp(random.random()*cumdiimfp[-1],cumdiimfp,theta)
+                    if self.deflection[0] == np.nan:
+                        print("nan")
+                        self.deflection[0] = math.asin(math.sqrt(self.energy_loss/(self.energy + self.energy_loss)))
+                    self.uvw = self.update_direction(self.uvw,self.deflection,0)
+                    # self.uvw = self.change_direction(self.uvw,self.deflection)
+                else:
+                    print("Should not have happened but...")
             return True
         else:
-            print("else")
+            rn = random.random()
+            e = (self.energy - self.sample.material_data['e_gap'] - self.sample.material_data['e_vb'])/h2ev
+            de = self.sample.material_data['phonon']['eloss']/h2ev
+            if e - de > 0:
+                bph = (e + e - de + 2*math.sqrt(e*(e - de))) / (e + e - de - 2*math.sqrt(e*(e - de)))
+                self.deflection[0] = math.acos( (e + e - de)/(2*math.sqrt(e*(e - de)))*(1 - bph**rn) + bph**rn )
+                self.energy -= self.sample.material_data['phonon']['eloss']
+                self.is_dead()
+                if not self.dead:
+                    self.uvw = self.update_direction(self.uvw,self.deflection,0)
+            else:
+                self.dead = True
             return False
 
     def is_dead(self):
@@ -212,11 +244,15 @@ class Electron:
             self.dead = True
 
     def feg_dos(self):
+        if self.sample.material_data.is_metal:
+            e_ref = self.sample.material_data['e_fermi']
+        else:
+            e_ref = self.sample.material_data['e_vb']
         y_min = 0
-        y_max = math.sqrt(self.sample.material_data['e_fermi']*(self.sample.material_data['e_fermi'] + self.energy_loss))
+        y_max = math.sqrt(e_ref*(e_ref + self.energy_loss))
         e = 0
         while y_min + random.random()*(y_max - y_min) > math.sqrt(e*(e + self.energy_loss)):
-            e = self.sample.material_data['e_fermi']*random.random()
+            e = e_ref*random.random()
         self.energy_se = e
 
     def update_direction(self,uvw,deflection,algorithm=0):
@@ -315,14 +351,19 @@ class Electron:
         theta = math.acos(self.uvw[2])
         phi = math.atan2(self.uvw[1],self.uvw[0])
         if self.xyz[2] < 0:
-            ecos = self.energy*self.uvw[2]**2
-            if ecos > self.inner_potential:
-                t = 4*math.sqrt(1 - self.inner_potential/ecos)/((1 + math.sqrt(1 - self.inner_potential/ecos))**2)
+            if self.sample.material_data.is_metal and self.conduction_band_reference:
+                ecos = (self.energy - self.sample.material_data['e_gap'] - self.sample.material_data['e_vb'])*self.uvw[2]**2
+                ui = self.sample.material_data['affinity']
+            else:
+                ecos = self.energy*self.uvw[2]**2
+                ui = self.inner_potential
+            if ecos > ui:
+                t = 4*math.sqrt(1 - ui/ecos)/((1 + math.sqrt(1 - ui/ecos))**2)
             else:
                 t = 0
             if random.random() < t:
                 self.inside = False
-                theta_vacuum = math.asin(math.sin(theta)*math.sqrt( self.energy/(self.energy - self.inner_potential) ))
+                theta_vacuum = math.asin(math.sin(theta)*math.sqrt( self.energy/(self.energy - ui) ))
                 self.energy -= self.inner_potential
                 self.calculate_direction(theta_vacuum,phi)
                 if self.save_coordinates:
@@ -455,8 +496,8 @@ class SEEMC:
         
         fig.update_layout(
             autosize=False,
-            width=1000,
-            height=800,
+            width=1100,
+            height=850,
             showlegend=False,
             coloraxis=dict(colorscale='Turbo'),
             coloraxis_colorbar=dict(title='Energy (eV)'),
@@ -472,7 +513,5 @@ class SEEMC:
         fig.update_yaxes(autorange="reversed")
         fig.update_coloraxes(colorscale='Turbo')
         fig.show()
-        
-        
         
         
