@@ -15,7 +15,7 @@ class Sample:
     material_data = {}
     kbt = 9.445e-4
     
-    def __init__(self,name,is_metal = True):
+    def __init__(self,name):
         with open('MaterialDatabase.pkl','rb') as fp:
             data = pickle.load(fp)
         if name in [sub['name'] for sub in data]:
@@ -23,7 +23,7 @@ class Sample:
             self.material_data = data[next((i for i, item in enumerate(data) if item["name"] == name), None)]
         else:
             raise ValueError('Allowed sample names are ' + str([sub['name'] for sub in data]))
-        self.is_metal = is_metal
+        self.is_metal = self.material_data['is_metal']
 
     def get_imfp(self,energy):
         return np.interp(energy,self.material_data['energy'],self.material_data['imfp'])
@@ -72,7 +72,7 @@ class Electron:
     
     def __init__(self,sample,energy,cb_ref,save_coord,xyz,uvw,gen,se,ind):
         self.sample = sample
-        if self.sample.material_data.is_metal:
+        if self.sample.is_metal:
             self.inner_potential = self.sample.material_data['e_fermi'] + self.sample.material_data['work_function']
         else:
             self.inner_potential = self.sample.material_data['e_vb'] + self.sample.material_data['e_gap'] + self.sample.material_data['affinity']
@@ -97,7 +97,7 @@ class Electron:
         self.dead = False
         self.scattering_type = -1
         self.n_secondaries = 0
-        self.energy_se = self.sample.material_data['e_fermi']
+        self.energy_se = 0
         self.energy_loss = 0
         self.path_length = 0
         self.deflection = [0,0]
@@ -113,14 +113,14 @@ class Electron:
 
     @property
     def iemfp(self):
-        if self.sample.material_data.is_metal:
+        if self.sample.is_metal:
             return 1/self.sample.get_emfp(self.energy)
         else:
             return 1/self.sample.get_emfp(self.energy - self.sample.material_data['e_gap'] - self.sample.material_data['e_vb'])
 
     @property
     def iphmfp(self):
-        if self.sample.is_metal:
+        if self.sample.is_metal or 'phonon' not in self.sample.material_data.keys():
             return 0
         else:
             return 1/self.sample.get_phmfp(self.energy - self.sample.material_data['e_gap'] - self.sample.material_data['e_vb'])
@@ -208,7 +208,7 @@ class Electron:
             self.is_dead()
             if not self.dead:
                 self.feg_dos()
-                if self.sample.material_data.is_metal:
+                if self.sample.is_metal:
                     min_energy = 1
                 else:
                     min_energy = self.sample.material_data['e_gap']
@@ -244,7 +244,7 @@ class Electron:
             self.dead = True
 
     def feg_dos(self):
-        if self.sample.material_data.is_metal:
+        if self.sample.is_metal:
             e_ref = self.sample.material_data['e_fermi']
         else:
             e_ref = self.sample.material_data['e_vb']
@@ -351,7 +351,7 @@ class Electron:
         theta = math.acos(self.uvw[2])
         phi = math.atan2(self.uvw[1],self.uvw[0])
         if self.xyz[2] < 0:
-            if self.sample.material_data.is_metal and self.conduction_band_reference:
+            if self.sample.is_metal and self.conduction_band_reference:
                 ecos = (self.energy - self.sample.material_data['e_gap'] - self.sample.material_data['e_vb'])*self.uvw[2]**2
                 ui = self.sample.material_data['affinity']
             else:
@@ -513,5 +513,4 @@ class SEEMC:
         fig.update_yaxes(autorange="reversed")
         fig.update_coloraxes(colorscale='Turbo')
         fig.show()
-        
         
