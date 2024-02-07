@@ -1320,7 +1320,6 @@ class Material:
 		ind = np.isnan(elf_interp)
 		if np.any(ind):
 			self.q = np.exp(q)/a0
-			self.oscillators.model = 'Mermin'
 			self.calculate_elf()
 			elf_interp[ind] = self.elf[ind]
 		
@@ -1331,8 +1330,6 @@ class Material:
 		iimfp[np.isnan(iimfp)] = 1e-5
 		self.diimfp = diimfp
 		self.iimfp = iimfp
-		self.oscillators.model = 'FPA'
-
 
 
 	def calculate_imfp(self, energy, de=0.5, nq=10):
