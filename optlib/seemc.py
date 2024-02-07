@@ -7,6 +7,7 @@ from scipy.interpolate import RectBivariateSpline
 import random
 import matplotlib.pyplot as plt
 import time
+import plotly.graph_objects as go
 from tqdm import tqdm
 
 
@@ -75,6 +76,7 @@ class Electron:
         else:
             self.energy = energy + self.inner_potential
         self.initial_energy = self.energy
+        self.initial_depth = xyz[2]
         self.parent_index = ind
         self.coordinates = []
         if save_coord:
@@ -184,11 +186,14 @@ class Electron:
             eloss = np.squeeze(self.sample.material_data['diimfp'][:,0,ind])
             diimfp = np.squeeze(self.sample.material_data['diimfp'][:,1,ind])
             cumdiimfp = integrate.cumtrapz(diimfp,eloss,initial=0)
-            cumdiimfp = (cumdiimfp - cumdiimfp[0])/(cumdiimfp[-1] - cumdiimfp[0])
-            self.energy_loss = np.interp(random.random(),cumdiimfp,eloss)
-            self.energy = self.energy - self.energy_loss
+            while True:
+                self.energy_loss = np.interp(random.random()*cumdiimfp[-1],cumdiimfp,eloss)
+                if self.energy_loss < self.energy:
+                    break
+            self.energy -= self.energy_loss
             self.is_dead()
             if not self.dead:
+                self.feg_dos()
                 theta,angdist = self.sample.get_angular_iimfp(self.energy + self.energy_loss,self.energy_loss)
                 cumdiimfp = integrate.cumtrapz(angdist*np.sin(theta),theta,initial=0)
                 self.deflection[0] = np.interp(random.random()*cumdiimfp[-1],cumdiimfp,theta)
@@ -205,6 +210,14 @@ class Electron:
     def is_dead(self):
         if self.energy < self.inner_potential:
             self.dead = True
+
+    def feg_dos(self):
+        y_min = 0
+        y_max = math.sqrt(self.sample.material_data['e_fermi']*(self.sample.material_data['e_fermi'] + self.energy_loss))
+        e = 0
+        while y_min + random.random()*(y_max - y_min) > math.sqrt(e*(e + self.energy_loss)):
+            e = self.sample.material_data['e_fermi']*random.random()
+        self.energy_se = e
 
     def update_direction(self,uvw,deflection,algorithm=0):
         base_uvw = [0.0, 0.0, 0.0]
@@ -353,7 +366,7 @@ class SEEMC:
                         if e_statistics[i].inside and not e_statistics[i].dead:
                             e_statistics[i].get_scattering_type()
                             if e_statistics[i].scatter():
-                                se_energy = e_statistics[i].energy_loss + e_statistics[i].sample.material_data['e_fermi']
+                                se_energy = e_statistics[i].energy_loss + e_statistics[i].energy_se
                                 if se_energy > e_statistics[i].inner_potential:
                                     se_xyz[0] = e_statistics[i].xyz[0]
                                     se_xyz[1] = e_statistics[i].xyz[1]
@@ -390,14 +403,24 @@ class SEEMC:
         print("BSE:",self.bse)
 
     def calculate_energy_histogram(self,energy_index=0):
-        self.se_histogram = []
-        self.pe_histogram = []
+        self.se_energy_histogram = []
+        self.pe_energy_histogram = []
         for e in self.electron_list[energy_index]:
             if not e.inside:
                 if e.is_secondary:
-                    self.se_histogram.append(e.energy)
+                    self.se_energy_histogram.append(e.energy)
                 else:
-                    self.pe_histogram.append(e.energy)
+                    self.pe_energy_histogram.append(e.energy)
+
+    def calculate_depth_histogram(self,energy_index=0):
+        self.se_depth_histogram = []
+        self.pe_depth_histogram = []
+        for e in self.electron_list[energy_index]:
+            if not e.inside:
+                if e.is_secondary:
+                    self.se_depth_histogram.append(e.initial_depth)
+                else:
+                    self.pe_depth_histogram.append(e.initial_depth)
 
     def plot_yield(self):
         plt.figure()
@@ -410,20 +433,46 @@ class SEEMC:
         plt.legend()
         plt.show()
 
-    def plot_trajectories(self,energy_index):
-        plt.figure()
-        energy = self.energy_array[energy_index]
+    def plot_trajectories(self,energy_index=0):
+        fig = go.Figure()
         for e in self.electron_list[energy_index]:
-            # if not e.is_secondary:
             x_c = [x[0] for x in e.coordinates]
             y_c = [x[1] for x in e.coordinates]
             z_c = [x[2] for x in e.coordinates]
             c = [x[3] for x in e.coordinates]
-            plt.plot(x_c,z_c,'-o',linewidth=1)
-            # plt.scatter(y_c,z_c,s=5, c=c, cmap='jet')
-        plt.gca().invert_yaxis()
-        # plt.colorbar()
-        plt.show()
+        
+            fig.add_traces(
+                go.Scatter(
+                    x=x_c,
+                    y=z_c,
+                    mode='markers+lines',
+                    showlegend=False,
+                    marker=dict(color=c,coloraxis='coloraxis'),
+                    line_color='black',
+                    line={'width': 0.5}
+                )
+            )
+        
+        fig.update_layout(
+            autosize=False,
+            width=1000,
+            height=800,
+            showlegend=False,
+            coloraxis=dict(colorscale='Turbo'),
+            coloraxis_colorbar=dict(title='Energy (eV)'),
+            title=self.sample.name,
+            xaxis_title="X axis",
+            yaxis_title="Z axis"
+        )
+        
+        # for i, data in enumerate(fig['data']):
+        #     fig.update_traces(marker_color=data['line']['color'],
+        #                       selector=dict(name=data['name']))
+        
+        fig.update_yaxes(autorange="reversed")
+        fig.update_coloraxes(colorscale='Turbo')
+        fig.show()
+        
         
         
         
