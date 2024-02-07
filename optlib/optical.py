@@ -1267,8 +1267,15 @@ class Material:
 
 
 	def diimfp_interp_fpa(self,e,rbs,nq = 100,de = 0.5):
-		self.diimfp_e = linspace(0,e - self.e_fermi,de)
-		e0 = e/h2ev
+		if self.is_metal:
+			self.diimfp_e = linspace(1e-5, e - self.e_fermi, de)
+		else:
+			if e < 2*self.e_gap + self.width_of_the_valence_band:
+				raise InputError("Please specify the value of energy greater than the 2*band gap + the width of the valence band")
+			else:
+				e0 = (e - self.e_gap)/h2ev
+				self.diimfp_e = linspace(self.e_gap, e - self.e_gap - self.width_of_the_valence_band, de)
+				
 		omega = self.diimfp_e/h2ev
 		c = 137.036
 		qm = np.log( np.sqrt( e0 * ( 2 + e0/(c**2) ) ) - np.sqrt( ( e0 - omega ) * ( 2 + (e0 - omega)/(c**2) ) ) )
@@ -1290,8 +1297,15 @@ class Material:
 
 
 	def diimfp_interp_fpa_mermin(self,e,rbs,nq = 100,de = 0.5):
-		self.diimfp_e = linspace(0,e - self.e_fermi,de)
-		e0 = e/h2ev
+		if self.is_metal:
+			self.diimfp_e = linspace(1e-5, e - self.e_fermi, de)
+		else:
+			if e < 2*self.e_gap + self.width_of_the_valence_band:
+				raise InputError("Please specify the value of energy greater than the 2*band gap + the width of the valence band")
+			else:
+				e0 = (e - self.e_gap)/h2ev
+				self.diimfp_e = linspace(self.e_gap, e - self.e_gap - self.width_of_the_valence_band, de)
+
 		omega = self.diimfp_e/h2ev
 		c = 137.036
 		qm = np.log( np.sqrt( e0 * ( 2 + e0/(c**2) ) ) - np.sqrt( ( e0 - omega ) * ( 2 + (e0 - omega)/(c**2) ) ) )
