@@ -875,7 +875,7 @@ class Material:
 		if self.atomic_density is None:
 			raise InputError("Please specify the value of the atomic density atomic_density")
 		numberOfElements = len(self.composition.elements)
-		energy = linspace(10,30000)
+		energy = linspace(100,30000)
 		f1sum = np.zeros_like(energy)
 		f2sum = np.zeros_like(energy)
 
@@ -890,8 +890,8 @@ class Material:
 		# f1sum /= np.sum(self.composition.indices)
 		# f2sum /= np.sum(self.composition.indices)
 
-		self.n = 1 - self.atomic_density * r0 * 1e10 * lambda_**2 * f1sum/2/math.pi
-		self.k = -self.atomic_density * r0 * 1e10 * lambda_**2 * f2sum/2/math.pi
+		n = 1 - self.atomic_density * r0 * 1e10 * lambda_**2 * f1sum/2/math.pi
+		k = -self.atomic_density * r0 * 1e10 * lambda_**2 * f2sum/2/math.pi
 
 		eps1 = n**2 - k**2
 		eps2 = 2*n*k
