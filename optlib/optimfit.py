@@ -11,7 +11,7 @@ from optlib.constants import *
 
 class OptFit:
 
-	def __init__(self, material, exp_data, e0, de = 0.5, n_q = 10):
+	def __init__(self, material, exp_data, e0, de = 0.5, n_q = 10, fit_alpha = True):
 		if not isinstance(material, Material):
 			raise InputError("The material must be of the type Material")
 		if e0 == 0:
@@ -22,6 +22,7 @@ class OptFit:
 		self.de = de
 		self.n_q = n_q
 		self.count = 0
+		self.fit_alpha = fit_alpha
 		
 	def set_bounds(self):
 		osc_min_A = np.ones_like(self.material.oscillators.A) * 1e-10
@@ -41,7 +42,7 @@ class OptFit:
 			osc_max_U = 10.0
 			self.lb = np.append( np.hstack((osc_min_A,osc_min_gamma,osc_min_omega)), osc_min_U )
 			self.ub = np.append( np.hstack((osc_max_A,osc_max_gamma,osc_max_omega)), osc_max_U )
-		elif self.material.oscillators.model == 'Mermin':
+		elif self.material.oscillators.model == 'Mermin' or not self.fit_alpha:
 			self.lb = np.hstack((osc_min_A,osc_min_gamma,osc_min_omega))
 			self.ub = np.hstack((osc_max_A,osc_max_gamma,osc_max_omega))
 		else:
