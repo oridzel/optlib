@@ -224,14 +224,14 @@ class OptFit:
 	def struct2vec(self, osc_struct):
 		if osc_struct.oscillators.model == 'MLL':
 			vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.u )
-		elif self.material.oscillators.model == 'Mermin':
+		elif self.material.oscillators.model == 'Mermin' or not self.fit_alpha:
 			vec = np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega))
 		else:
 			vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.oscillators.alpha )
 		return vec
 
 	def vec2struct(self, osc_vec):
-		if self.material.oscillators.model == 'Mermin':
+		if self.material.oscillators.model == 'Mermin' or not self.fit_alpha:
 			oscillators = np.split(osc_vec[:],3)
 		else:
 			oscillators = np.split(osc_vec[0:-1],3)
