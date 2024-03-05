@@ -1227,7 +1227,6 @@ class Material:
 		rel_coef = ((1 + (e0/h2ev)/(c**2))**2) / (1 + (e0/h2ev)/(2*c**2))
 
 		if self.oscillators.alpha == 0 and self.oscillators.model != 'Mermin' and self.oscillators.model != 'MLL': # and self.q_dependency is None:
-			print('here')
 			qm = np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) - np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
 			qp =  np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) + np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
 			self.extend_to_henke()
