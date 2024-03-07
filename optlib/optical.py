@@ -1210,7 +1210,7 @@ class Material:
 		self.imfp_e = energy
 
 
-	def calculate_diimfp(self, e0, de = 0.5, nq = 100, normalised = True, is_metal = True):
+	def calculate_diimfp(self, e0, de = 0.5, nq = 100, normalised = True):
 		old_eloss = self.eloss
 		old_q = self.q
 		old_e0 = e0
@@ -1228,7 +1228,7 @@ class Material:
 
 		if self.oscillators.alpha == 0 and self.oscillators.model != 'Mermin' and self.oscillators.model != 'MLL': # and self.q_dependency is None:
 			qm = np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) - np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
-			qp =  np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) + np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
+			qp = np.sqrt(e0/h2ev * (2 + e0/h2ev/(c**2))) + np.sqrt((e0/h2ev - self.eloss/h2ev) * (2 + (e0/h2ev - self.eloss/h2ev)/(c**2)))
 			self.extend_to_henke()
 			int_limits = np.log(qp/qm)
 			int_limits[np.isinf(int_limits)] = 1e-5
