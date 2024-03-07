@@ -42,14 +42,14 @@ class OptFit:
 			osc_max_U = 10.0
 			self.lb = np.append( np.hstack((osc_min_A,osc_min_gamma,osc_min_omega)), osc_min_U )
 			self.ub = np.append( np.hstack((osc_max_A,osc_max_gamma,osc_max_omega)), osc_max_U )
-		elif self.material.oscillators.model == 'Mermin' or not self.fit_alpha:
-			self.lb = np.hstack((osc_min_A,osc_min_gamma,osc_min_omega))
-			self.ub = np.hstack((osc_max_A,osc_max_gamma,osc_max_omega))
-		else:
+		elif self.fit_alpha and not self.material.oscillators.model == 'Mermin':
 			osc_min_alpha = 0.0
 			osc_max_alpha = 1.0
 			self.lb = np.append( np.hstack((osc_min_A,osc_min_gamma,osc_min_omega)), osc_min_alpha )
 			self.ub = np.append( np.hstack((osc_max_A,osc_max_gamma,osc_max_omega)), osc_max_alpha )
+		else:
+			self.lb = np.hstack((osc_min_A,osc_min_gamma,osc_min_omega))
+			self.ub = np.hstack((osc_max_A,osc_max_gamma,osc_max_omega))
 			
 
 	def run_optimisation(self, diimfp_coef, elf_coef, maxeval = 1000, xtol_rel = 1e-6, is_global = False):
@@ -224,17 +224,18 @@ class OptFit:
 	def struct2vec(self, osc_struct):
 		if osc_struct.oscillators.model == 'MLL':
 			vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.u )
-		elif self.material.oscillators.model == 'Mermin' or not self.fit_alpha:
-			vec = np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega))
-		else:
+		elif self.fit_alpha and not self.material.oscillators.model == 'Mermin':
 			vec = np.append( np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega)), osc_struct.oscillators.alpha )
+		else:
+			vec = np.hstack((osc_struct.oscillators.A,osc_struct.oscillators.gamma,osc_struct.oscillators.omega))
 		return vec
 
 	def vec2struct(self, osc_vec):
-		if self.material.oscillators.model == 'Mermin' or not self.fit_alpha:
-			oscillators = np.split(osc_vec[:],3)
-		else:
+		if self.material.oscillators.model == 'MLL' or (self.fit_alpha and not self.material.oscillators.model == 'Mermin'):
 			oscillators = np.split(osc_vec[0:-1],3)
+		else:
+			oscillators = np.split(osc_vec[:],3)			
+		
 		material = copy.deepcopy(self.material)
 		material.oscillators.A = oscillators[0]
 		material.oscillators.gamma = oscillators[1]
@@ -242,7 +243,7 @@ class OptFit:
 		
 		if self.material.oscillators.model == 'MLL':
 			material.u = osc_vec[-1]
-		elif self.material.oscillators.model != 'Mermin':
+		elif self.fit_alpha and not self.material.oscillators.model == 'Mermin':
 			material.oscillators.alpha = osc_vec[-1]
 			
 		return material
