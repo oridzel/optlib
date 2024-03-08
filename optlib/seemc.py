@@ -13,7 +13,8 @@ from tqdm import tqdm
 
 class Sample:
     material_data = {}
-    kbt = 9.445e-4
+    T = 300 # K
+    k_B = 8.617e-5 # eV/K
     
     def __init__(self,name):
         with open('MaterialDatabase.pkl','rb') as fp:
@@ -33,11 +34,12 @@ class Sample:
 
     def get_phmfp(self,energy):
         if 'phonon' in self.material_data.keys():
-            de = self.material_data['phonon']['eloss']/energy
-            sqe = np.sqrt(1 - de)
-            return (self.material_data['phonon']['eps_zero'] - self.material_data['phonon']['eps_inf'])/ \
-            (self.material_data['phonon']['eps_zero']*self.material_data['phonon']['eps_inf'])*de* \
-            ( (1/(np.exp(self.material_data['phonon']['eloss']/self.kbt)-1))+1 )/2*np.log( (1.0+sqe)/(1.0-sqe) )
+            eloss = np.array(self.material_data['phonon']['eloss'])
+            de_over_e = eloss/energy
+            n_lo = 1.0/(np.exp(eloss/(self.k_B*self.T/h2ev)) - 1.0)
+            ln_plus = (1.0 + np.sqrt(np.abs(1.0 - de_over_e))) / (1.0 - np.sqrt(np.abs(1.0 - de_over_e)))
+            term_plus = (n_lo + 1.0) * (1.0/self.material_data['phonon']['eps_inf'] - 1.0/self.material_data['phonon']['eps_zero']) * de_over_e/2.0
+            return term_plus*np.log(ln_plus)
         else:
             return 0
 
@@ -127,7 +129,7 @@ class Electron:
 
     @property
     def itmfp(self):
-        return self.iimfp + self.iemfp + self.iphmfp
+        return self.iimfp + self.iemfp + np.sum(self.iphmfp)
 
     @property
     def sample(self):
@@ -227,11 +229,14 @@ class Electron:
         else:
             rn = random.random()
             e = (self.energy - self.sample.material_data['e_gap'] - self.sample.material_data['e_vb'])/h2ev
-            de = self.sample.material_data['phonon']['eloss']/h2ev
+            if random.random() < self.iphmfp[0]/np.sum(self.iphmfp):
+                de = self.sample.material_data['phonon']['eloss'][0]/h2ev
+            else:
+                de = self.sample.material_data['phonon']['eloss'][1]/h2ev
             if e - de > 0:
                 bph = (e + e - de + 2*math.sqrt(e*(e - de))) / (e + e - de - 2*math.sqrt(e*(e - de)))
                 self.deflection[0] = math.acos( (e + e - de)/(2*math.sqrt(e*(e - de)))*(1 - bph**rn) + bph**rn )
-                self.energy -= self.sample.material_data['phonon']['eloss']
+                self.energy -= de*h2ev
                 self.is_dead()
                 if not self.dead:
                     self.uvw = self.update_direction(self.uvw,self.deflection,0)
