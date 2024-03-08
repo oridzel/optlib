@@ -9,8 +9,8 @@ import os
 import time
 from tqdm import tqdm
 import re
-from scipy import optimize
-from scipy.interpolate import RectBivariateSpline
+from scipy import optimize, special, stats
+from scipy.interpolate import RectBivariateSpline, interp1d
 from optlib.constants import *
 
 def wavelength2energy(wavelength):
@@ -569,18 +569,18 @@ class Material:
 		reres[np.logical_and(x > 0, x < 0)] = math.pi / 2.0
 		return complex_array(reres.real, imres.imag)
 	
-	def lindhard_epsilon(omega,q,omega_pl):
+	def g(self,x):
+		return (1-x**2)*np.log(np.abs(1+x)/np.abs(1-x))
+	
+	def lindhard_epsilon(self,omega,q,omega_pl):
 		k_f = np.sqrt( (3*math.pi/4)**(1/3) * omega_pl**(2/3) )
 		u = omega[:,np.newaxis,np.newaxis]/(q[:,np.newaxis]*k_f)
 		z = q[:,np.newaxis]/(2*k_f)
 		chi = np.sqrt(1/(math.pi*k_f))
 
-		f_1 = 1/2 + 1/(8*z)*(g(z-u)+g(z+u))
+		f_1 = 1/2 + 1/(8*z)*(self.g(z-u) + self.g(z+u))
 		f_2 = math.pi/2*u*np.heaviside(1-z-u,0.5) + math.pi/(8*z)*(1-(z-u)**2)*np.heaviside(1-np.abs(z-u),0.5)*np.heaviside(z+u-1,0.5)
 		return 1 + chi**2/z**2*(f_1+f_2*1j)
-
-	def g(x):
-		return (1-x**2)*np.log(np.abs(1+x)/np.abs(1-x))
 	
 	def calculate_fpa_elf(self, omega_pl_max = 5000):
 		self._convert2au()
@@ -1632,7 +1632,7 @@ class SAReflection:
 			if any(ind):
 				self.angular_distribution[:, k] = self.R_m[ind,:,k,0] * 2 * math.pi
 			else:
-				f = interpolate.interp1d(self.mu_mesh, self.R_m[:,:,k,0])
+				f = interp1d(self.mu_mesh, self.R_m[:,:,k,0])
 				self.angular_distribution[:, k] = f(self.mu_i) * 2 * math.pi
 		
 		print('Angular Distribution calculated')
@@ -1645,7 +1645,7 @@ class SAReflection:
 			if any(ind):
 				self.partial_intensities[k] = self.angular_distribution[ind,k]
 			else:
-				f = interpolate.interp1d(self.mu_mesh, self.angular_distribution[:,k])
+				f = interp1d(self.mu_mesh, self.angular_distribution[:,k])
 				self.partial_intensities[k] = f(self.mu_o)
 
 		print('Partial Intensities calculated')
@@ -1690,7 +1690,7 @@ class SAReflection:
 			else:
 				solid_angle = np.deg2rad(solid_angle)
 				mu_ = np.cos(np.linspace(np.arccos(self.mu_o), np.arccos(self.mu_o) + solid_angle, 100))
-				f = interpolate.interp1d(self.mu_mesh, self.angular_distribution, axis=0)
+				f = interp1d(self.mu_mesh, self.angular_distribution, axis=0)
 				self.energy_distribution_b = np.trapz(-2*math.pi * (np.mat(convs_b) * np.mat(f(mu_).T)), mu_, axis=1)
 		else:
 			# self.energy_distribution_b = np.sum(convs_b*np.squeeze(self.partial_intensities / self.partial_intensities[0]),axis=1)
