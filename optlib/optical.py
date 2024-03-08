@@ -1379,6 +1379,7 @@ class Material:
 			iimfp_phonon.append(np.array(iimfp_minus) + np.array(iimfp_plus))
 
 		self.imfp_phonon = 1/(np.array(iimfp_phonon[0]) + np.array(iimfp_phonon[1]))*a0
+		self.imfp_phonon_plus = 1/iimfp_plus*a0
 
 
 	def _get_sigma(self, lines, line, pattern):
