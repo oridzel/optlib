@@ -859,7 +859,10 @@ class Material:
 		div[((div < 0) | (np.isnan(div)))] = 1e-5
 		kksum = 2 / math.pi * np.trapz(div, self.eloss_extended_to_henke)
 		if self.e_gap != 0:
-			kksum += 1 / self.static_refractive_index**2
+			if self.static_refractive_index == 0:
+				kksum += 1 / self.epsilon.real[0]
+			else:
+				kksum += 1 / self.static_refractive_index**2
 		self.q = old_q
 		return kksum
 
