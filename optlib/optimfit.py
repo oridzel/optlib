@@ -124,10 +124,11 @@ class OptFit:
 				self.material.electron_density_henke = self.material.atomic_density * self.material.Z * a0 ** 3 - \
 					1 / (2 * math.pi**2) * np.trapz(self.material.eloss_henke / h2ev * self.material.elf_henke, self.material.eloss_henke / h2ev)
 				opt.add_inequality_constraint(self.constraint_function_henke)
-				if self.material.oscillators.model == 'Drude':
-					opt.add_inequality_constraint(self.constraint_function_kk)
-				else:
-					opt.add_inequality_constraint(self.constraint_function_refind_henke)
+				if self.material.use_kk_constraint:
+					if self.material.oscillators.model == 'Drude':
+						opt.add_inequality_constraint(self.constraint_function_kk)
+					else:
+						opt.add_inequality_constraint(self.constraint_function_refind_henke)
 			else:
 				opt.add_inequality_constraint(self.constraint_function)
 				if self.material.use_kk_constraint:
@@ -341,6 +342,7 @@ class OptFit:
 	def constraint_function_kk(self, osc_vec, grad):
 		material = self.vec2struct(osc_vec)
 		material._convert2au()
+		material.q = 0
 		if material.static_refractive_index == 0:
 			cf = ( material.epsilon.real[0] - material.oscillators.eps_b ) / np.sum(material.oscillators.A/material.oscillators.omega ** 2)
 		else:
