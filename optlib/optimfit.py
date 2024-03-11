@@ -341,7 +341,10 @@ class OptFit:
 	def constraint_function_kk(self, osc_vec, grad):
 		material = self.vec2struct(osc_vec)
 		material._convert2au()
-		cf = ( material.static_refractive_index**2 - material.oscillators.eps_b ) / np.sum(material.oscillators.A/material.oscillators.omega ** 2)
+		if material.static_refractive_index == 0:
+			cf = ( material.epsilon.real[0] - material.oscillators.eps_b ) / np.sum(material.oscillators.A/material.oscillators.omega ** 2)
+		else:
+			cf = ( material.static_refractive_index**2 - material.oscillators.eps_b ) / np.sum(material.oscillators.A/material.oscillators.omega ** 2)
 		val = np.fabs(cf - 1)
 
 		if grad.size > 0:
