@@ -374,14 +374,16 @@ class OptFit:
 	def constraint_function_henke(self, osc_vec, grad):
 		global iteration
 		material = self.vec2struct(osc_vec)
-		material._convert2au()
+		# material._convert2au()
 
-		if material.oscillators.model == 'Drude':
-			cf = self.material.electron_density_henke * 4 * math.pi / np.sum(material.oscillators.A)
-		else:
-			cf = (1 - 1 / self.material.static_refractive_index ** 2) / np.sum(material.oscillators.A)
+		# if material.oscillators.model == 'Drude':
+		# 	cf = self.material.electron_density_henke * 4 * math.pi / np.sum(material.oscillators.A)
+		# else:
+		# 	cf = (1 - 1 / self.material.static_refractive_index ** 2) / np.sum(material.oscillators.A)
 
-		val = np.fabs(cf - 1)
+		fsum = material.evaluate_f_sum()
+		val = np.fabs(fsum - material.Z)
+		
 		if grad.size > 0:
 			grad = np.array([0, 0.5 / val])
 
