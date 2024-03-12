@@ -396,7 +396,7 @@ class OptFit:
 		global iteration
 		material = self.vec2struct(osc_vec)
 
-		kksum = material.ealuate_kk_sum()
+		kksum = material.evaluate_kk_sum()
 		val = np.fabs(kksum - 1)
 
 		if grad.size > 0:
