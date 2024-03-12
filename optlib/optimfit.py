@@ -82,18 +82,22 @@ class OptFit:
 					self.material.eloss_henke, self.material.elf_henke = self.material.mopt()
 				self.material.electron_density_henke = self.material.atomic_density * self.material.Z * a0 ** 3 - \
 					1 / (2 * math.pi**2) * np.trapz(self.material.eloss_henke / h2ev * self.material.elf_henke, self.material.eloss_henke / h2ev)
-				opt.add_inequality_constraint(self.constraint_function_henke)
-				if self.material.oscillators.model == 'Drude':
-					opt.add_inequality_constraint(self.constraint_function_kk)
-				else:
-					opt.add_inequality_constraint(self.constraint_function_refind_henke)
-			else:
-				opt.add_inequality_constraint(self.constraint_function)
-				if self.material.use_kk_constraint:
-					if self.material.oscillators.model == 'Drude':
-						opt.add_inequality_constraint(self.constraint_function_kk)
-					else:
-						opt.add_inequality_constraint(self.constraint_function_refind)
+				
+			opt.add_inequality_constraint(self.fsum_constraint)
+			if self.material.use_kk_constraint:
+				opt.add_inequality_constraint(self.kksum_constraint)
+			# 	opt.add_inequality_constraint(self.constraint_function_henke)
+			# 	if self.material.oscillators.model == 'Drude':
+			# 		opt.add_inequality_constraint(self.constraint_function_kk)
+			# 	else:
+			# 		opt.add_inequality_constraint(self.constraint_function_refind_henke)
+			# else:
+			# 	opt.add_inequality_constraint(self.constraint_function)
+			# 	if self.material.use_kk_constraint:
+			# 		if self.material.oscillators.model == 'Drude':
+			# 			opt.add_inequality_constraint(self.constraint_function_kk)
+			# 		else:
+			# 			opt.add_inequality_constraint(self.constraint_function_refind)
 
 			opt.set_maxeval(maxeval)
 			opt.set_xtol_rel(xtol_rel)
@@ -123,19 +127,24 @@ class OptFit:
 					self.material.eloss_henke, self.material.elf_henke = self.material.mopt()
 				self.material.electron_density_henke = self.material.atomic_density * self.material.Z * a0 ** 3 - \
 					1 / (2 * math.pi**2) * np.trapz(self.material.eloss_henke / h2ev * self.material.elf_henke, self.material.eloss_henke / h2ev)
-				opt.add_inequality_constraint(self.constraint_function_henke)
-				if self.material.use_kk_constraint:
-					if self.material.oscillators.model == 'Drude':
-						opt.add_inequality_constraint(self.constraint_function_kk)
-					else:
-						opt.add_inequality_constraint(self.constraint_function_refind_henke)
-			else:
-				opt.add_inequality_constraint(self.constraint_function)
-				if self.material.use_kk_constraint:
-					if self.material.oscillators.model == 'Drude':
-						opt.add_inequality_constraint(self.constraint_function_kk)
-					else:
-						opt.add_inequality_constraint(self.constraint_function_refind)
+				
+			opt.add_inequality_constraint(self.fsum_constraint)
+			if self.material.use_kk_constraint:
+				opt.add_inequality_constraint(self.kksum_constraint)
+
+			# 	opt.add_inequality_constraint(self.constraint_function_henke)
+			# 	if self.material.use_kk_constraint:
+			# 		if self.material.oscillators.model == 'Drude':
+			# 			opt.add_inequality_constraint(self.constraint_function_kk)
+			# 		else:
+			# 			opt.add_inequality_constraint(self.constraint_function_refind_henke)
+			# else:
+			# 	opt.add_inequality_constraint(self.constraint_function)
+			# 	if self.material.use_kk_constraint:
+			# 		if self.material.oscillators.model == 'Drude':
+			# 			opt.add_inequality_constraint(self.constraint_function_kk)
+			# 		else:
+			# 			opt.add_inequality_constraint(self.constraint_function_refind)
 
 			x = opt.optimize(self.struct2vec(self.material))
 			self.bar.close()
@@ -204,13 +213,10 @@ class OptFit:
 					self.material.eloss_henke, self.material.elf_henke = self.material.mopt()
 				self.material.electron_density_henke = self.material.atomic_density * self.material.Z * a0 ** 3 - \
 					1 / (2 * math.pi**2) * np.trapz(self.material.eloss_henke / h2ev * self.material.elf_henke, self.material.eloss_henke / h2ev)
-				opt.add_inequality_constraint(self.constraint_function_henke)
-				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
-					opt.add_inequality_constraint(self.constraint_function_refind_henke)
-			else:
-				opt.add_inequality_constraint(self.constraint_function)
-				if self.material.use_kk_constraint and self.material.oscillators.model != 'Drude':
-					opt.add_inequality_constraint(self.constraint_function_refind_henke)
+
+			opt.add_inequality_constraint(self.fsum_constraint)
+			if self.material.use_kk_constraint:
+				opt.add_inequality_constraint(self.kksum_constraint)
 
 			self.material.calculate_elastic_properties(self.e0)
 			self.material.calculateLegendreCoefficients(200)
@@ -329,7 +335,10 @@ class OptFit:
 		material = self.vec2struct(osc_vec)
 		material._convert2au()
 		if material.oscillators.model == 'Drude':
-			cf = material.electron_density * wpc / np.sum(material.oscillators.A)
+			if material.use_henke_for_ne:
+				cf = material.electron_density_henke * 4 * math.pi / np.sum(material.oscillators.A)
+			else:
+				cf = material.electron_density * wpc / np.sum(material.oscillators.A)
 		else:
 			cf = (1 - 1 / material.static_refractive_index ** 2) / np.sum(material.oscillators.A)
 		val = np.fabs(cf - 1)
@@ -371,19 +380,25 @@ class OptFit:
 
 		return val
 
-	def constraint_function_henke(self, osc_vec, grad):
+	def fsum_constraint(self, osc_vec, grad):
 		global iteration
 		material = self.vec2struct(osc_vec)
-		# material._convert2au()
-
-		# if material.oscillators.model == 'Drude':
-		# 	cf = self.material.electron_density_henke * 4 * math.pi / np.sum(material.oscillators.A)
-		# else:
-		# 	cf = (1 - 1 / self.material.static_refractive_index ** 2) / np.sum(material.oscillators.A)
 
 		fsum = material.evaluate_f_sum()
 		val = np.fabs(fsum - material.Z)
-		
+
+		if grad.size > 0:
+			grad = np.array([0, 0.5 / val])
+
+		return val
+
+	def kksum_constraint(self, osc_vec, grad):
+		global iteration
+		material = self.vec2struct(osc_vec)
+
+		kksum = material.ealuate_kk_sum()
+		val = np.fabs(kksum - 1)
+
 		if grad.size > 0:
 			grad = np.array([0, 0.5 / val])
 
