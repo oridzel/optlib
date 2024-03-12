@@ -890,8 +890,9 @@ class Material:
 			f2sum += f2 * self.composition.indices[i]
 
 		lambda_ = hc/(energy/1000)
-		f1sum /= np.sum(self.composition.indices)
-		f2sum /= np.sum(self.composition.indices)
+		if not self.is_metal:
+			f1sum /= np.sum(self.composition.indices)
+			f2sum /= np.sum(self.composition.indices)
 
 		n = 1 - self.atomic_density * r0 * 1e10 * lambda_**2 * f1sum/2/math.pi
 		k = -self.atomic_density * r0 * 1e10 * lambda_**2 * f2sum/2/math.pi
