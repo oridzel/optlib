@@ -934,16 +934,16 @@ class Material:
 		if self.epsilon is None or self.epsilon.shape[0] != self.eloss.shape[0]:
 			self.calculate_dielectric_function()
 		n_complex = np.sqrt(self.epsilon)
-		self.re_fermiractive_index = n_complex.real
-		self.extinction_coe_fermificient = n_complex.imag
+		self.refractive_index = n_complex.real
+		self.extinction_coefficient = n_complex.imag
 
 	def calculate_optical_constants_(self):
 		if self.epsilon is None or self.epsilon.shape[0] != self.eloss.shape[0]:
 			self.calculate_dielectric_function()
 		first = np.sqrt(self.epsilon.real ** 2 + self.epsilon.imag ** 2) / 2
 		second = self.epsilon.real / 2
-		self.re_fermiractive_index = np.sqrt(first + second)
-		self.extinction_coe_fermificient = np.sqrt(first - second)
+		self.refractive_index = np.sqrt(first + second)
+		self.extinction_coefficient = np.sqrt(first - second)
 	
 	def calculateLidiimfp_vs(self, e0, r, alpha, n_q=10, de=0.5):
 		old_eloss = self.eloss
