@@ -17,6 +17,9 @@ def wavelength2energy(wavelength):
 	# wavelength in Angstroem
     return hc / wavelength  * 1e3
 
+def energy2wavelength(energy):
+	return hc / energy * 1e3
+
 
 def tpp(e,e_p,e_gap,rho):
     # imfp in nm
@@ -227,11 +230,11 @@ class Material:
 			eps_real -= self.oscillators.A[i] * eps_drude_real
 			eps_imag += self.oscillators.A[i] * eps_drude_imag
 
-		# if self.e_gap > 0:
-		# 	if len(eps_imag.shape) > 1:
-		# 		eps_imag[self.eloss <= self.e_gap,0] = 1e-5
-		# 	else:
-		# 		eps_imag[self.eloss <= self.e_gap] = 1e-5
+		if self.e_gap > 0:
+			if len(eps_imag.shape) > 1:
+				eps_imag[self.eloss <= self.e_gap,0] = 1e-5
+			else:
+				eps_imag[self.eloss <= self.e_gap] = 1e-5
 		if self.use_kk_relation:
 			if len(eps_real.shape) > 1:
 				eps_real[:,0] = self.kramers_kronig(eps_imag)
