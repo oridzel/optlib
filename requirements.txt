@@ -6,3 +6,4 @@ setuptools
 tqdm
 ipywidgets
 scipy
+plotly
