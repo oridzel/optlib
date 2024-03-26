@@ -2,3 +2,5 @@
 build/
 dist/
 optlib.egg-info/
+.idea/
+optlib/__pycache__/
