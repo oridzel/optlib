@@ -486,6 +486,8 @@ class SEEMC:
         self.tey /= self.n_trajectories
         self.sey /= self.n_trajectories
         self.bse /= self.n_trajectories
+
+        print("Energy:", self.energy_array)
         print("TEY:", self.tey)
         print("SEY:", self.sey)
         print("BSE:", self.bse)
