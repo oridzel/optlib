@@ -470,8 +470,8 @@ class SEEMC:
         for energy in self.energy_array:
             print(energy)
             self.current_energy = energy
-            pool = multiprocessing.Pool(multiprocessing.cpu_count())
-            res = tqdm(pool.imap(self.run_trajectory, range(self.n_trajectories)), total=self.n_trajectories)
+            with multiprocessing.Pool(multiprocessing.cpu_count()) as pool:
+                res = pool.map(self.run_trajectory, range(self.n_trajectories))
             self.electron_list.append([element for innerList in res for element in innerList])
 
         print("--- %s seconds ---" % (time.time() - start_time))
