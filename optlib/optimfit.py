@@ -166,7 +166,7 @@ class OptFit:
 			opt_local = nlopt.opt(nlopt.LN_COBYLA, len(self.struct2vec(self.material)))
 			opt_local.set_maxeval(maxeval)
 			opt_local.set_xtol_rel(xtol_rel)
-			opt_local.set_ftol_rel = 1e-20;
+			opt_local.set_ftol_rel = 1e-20
 
 			opt = nlopt.opt(nlopt.AUGLAG, len(self.struct2vec(self.material)))
 			opt.set_local_optimizer(opt_local)

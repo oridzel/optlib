@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import time
 import plotly.graph_objects as go
 from tqdm import tqdm
+import multiprocessing
 
 
 class Sample:
@@ -424,12 +425,56 @@ class SEEMC:
         self.sey = None
         self.tey = None
         self.energy_array = energy_array
+        self.current_energy = None
         self.sample = Sample(sample_name)
         self.n_trajectories = n_traj
         self.cb_ref = cb_ref
         self.track_trajectories = track
         self.electron_list = []
         self.incident_angle = angle
+
+
+    def run_trajectory(self, trajectory):
+        electron_data = []
+        i = 0
+        electron_data.append(Electron(self.sample, self.current_energy, self.cb_ref, self.track_trajectories, [0, 0, 0],
+                             [math.sin(self.incident_angle), 0, math.cos(self.incident_angle)], 0,
+                             False, -1))
+        while i < len(electron_data):
+            while electron_data[i].inside and not electron_data[i].dead:
+                se_xyz = [0, 0, 0]
+                electron_data[i].travel()
+                electron_data[i].escape()
+                if electron_data[i].inside and not electron_data[i].dead:
+                    electron_data[i].get_scattering_type()
+                    if electron_data[i].scatter():
+                        se_energy = electron_data[i].energy_loss + electron_data[i].energy_se
+                        if se_energy > electron_data[i].inner_potential:
+                            se_xyz[0] = electron_data[i].xyz[0]
+                            se_xyz[1] = electron_data[i].xyz[1]
+                            se_xyz[2] = electron_data[i].xyz[2]
+                            se_uvw = electron_data[i].change_direction(electron_data[i].uvw, [
+                                math.asin(math.cos(electron_data[i].deflection[0])),
+                                electron_data[i].deflection[1] + math.pi])
+                            electron_data[i].n_secondaries += 1
+                            electron_data.append(
+                                Electron(self.sample, se_energy, self.cb_ref, self.track_trajectories, se_xyz,
+                                         se_uvw, electron_data[i].generation + 1, True, i))
+            i += 1
+        return electron_data
+
+
+    def run_parallel_simulation(self):
+        start_time = time.time()
+
+        for energy in self.energy_array:
+            print(energy)
+            self.current_energy = energy
+            pool = multiprocessing.Pool(multiprocessing.cpu_count())
+            res = tqdm(pool.imap(self.run_trajectory, range(self.n_trajectories)), total=self.n_trajectories)
+            self.electron_list.append([element for innerList in res for element in innerList])
+
+        print("--- %s seconds ---" % (time.time() - start_time))
 
     def run_simulation(self, plot_yields=False):
         start_time = time.time()
@@ -455,7 +500,7 @@ class SEEMC:
                                     se_xyz[0] = e_statistics[i].xyz[0]
                                     se_xyz[1] = e_statistics[i].xyz[1]
                                     se_xyz[2] = e_statistics[i].xyz[2]
-                                    se_uvw = e_statistics[i].update_direction(e_statistics[i].uvw, [
+                                    se_uvw = e_statistics[i].change_direction(e_statistics[i].uvw, [
                                         math.asin(math.cos(e_statistics[i].deflection[0])),
                                         e_statistics[i].deflection[1] + math.pi])
                                     e_statistics[i].n_secondaries += 1
