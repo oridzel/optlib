@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 from tqdm import tqdm
 import multiprocessing
 from types import SimpleNamespace
+import gc
 
 
 class Sample:
@@ -386,38 +387,39 @@ class Electron:
         self.uvw[2] /= norm
 
     def escape(self):
-        if not self.dead:
-            theta = math.acos(self.uvw[2])
-            phi = math.atan2(self.uvw[1], self.uvw[0])
-            if self.xyz[2] < 0:
-                if self.sample.is_metal and self.conduction_band_reference:
-                    ecos = (self.energy - self.sample.material_data['e_gap'] - self.sample.material_data['e_vb']) * \
-                           self.uvw[2] ** 2
-                    ui = self.sample.material_data['affinity']
-                else:
-                    ecos = self.energy * self.uvw[2] ** 2
-                    ui = self.inner_potential
-                if ecos > ui:
-                    t = 4 * math.sqrt(1 - ui / ecos) / ((1 + math.sqrt(1 - ui / ecos)) ** 2)
-                else:
-                    t = 0
-                if random.random() < t:
-                    self.inside = False
-                    theta_vacuum = math.asin(math.sin(theta) * math.sqrt(self.energy / (self.energy - ui)))
-                    self.energy -= self.inner_potential
-                    self.calculate_direction(theta_vacuum, phi)
-                    if self.save_coordinates:
-                        self.xyz[0] += 100 * self.uvw[0]
-                        self.xyz[1] += 100 * self.uvw[1]
-                        self.xyz[2] += 100 * self.uvw[2]
-                        coord_vector = [round(elem, 2) for elem in self.xyz + [self.energy]]
-                        self.coordinates.append(coord_vector)
-                else:
-                    self.uvw[2] *= -1
-                    self.xyz[2] = 1e-10
-                    if self.save_coordinates:
-                        coord_vector = [round(elem, 2) for elem in self.xyz + [self.energy]]
-                        self.coordinates.append(coord_vector)
+        theta = math.acos(self.uvw[2])
+        phi = math.atan2(self.uvw[1], self.uvw[0])
+        if self.xyz[2] < 0:
+            if not self.sample.is_metal and self.conduction_band_reference:
+                ecos = (self.energy - self.sample.material_data['e_gap'] - self.sample.material_data['e_vb']) * \
+                       self.uvw[2] ** 2
+                ui = self.sample.material_data['affinity']
+            else:
+                ecos = self.energy * self.uvw[2] ** 2
+                ui = self.inner_potential
+            if ecos > ui:
+                t = 4 * math.sqrt(1 - ui / ecos) / ((1 + math.sqrt(1 - ui / ecos)) ** 2)
+            else:
+                t = 0
+            if random.random() < t:
+                self.inside = False
+                theta_vacuum = math.asin(math.sin(theta) * math.sqrt(self.energy / (self.energy - ui)))
+                self.energy -= self.inner_potential
+                self.calculate_direction(theta_vacuum, phi)
+                if self.save_coordinates:
+                    self.xyz[0] += 100 * self.uvw[0]
+                    self.xyz[1] += 100 * self.uvw[1]
+                    self.xyz[2] += 100 * self.uvw[2]
+                    coord_vector = [round(elem, 2) for elem in self.xyz + [self.energy]]
+                    self.coordinates.append(coord_vector)
+                return True
+            else:
+                self.uvw[2] *= -1
+                self.xyz[2] = 1e-10
+                if self.save_coordinates:
+                    coord_vector = [round(elem, 2) for elem in self.xyz + [self.energy]]
+                    self.coordinates.append(coord_vector)
+                return False
 
 
 class SEEMC:
@@ -446,8 +448,7 @@ class SEEMC:
             while electron_array[i].inside and not electron_array[i].dead:
                 se_xyz = [0, 0, 0]
                 electron_array[i].travel()
-                electron_array[i].escape()
-                if electron_array[i].inside and not electron_array[i].dead:
+                if not electron_array[i].escape():
                     electron_array[i].get_scattering_type()
                     if electron_array[i].scatter():
                         se_energy = electron_array[i].energy_loss + electron_array[i].energy_se
@@ -473,6 +474,7 @@ class SEEMC:
             electron_data.append(SimpleNamespace(**res))
             electron_array[i] = None
             i += 1
+        gc.collect()
         return electron_data
 
 
