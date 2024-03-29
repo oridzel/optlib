@@ -424,6 +424,7 @@ class Electron:
 
 class SEEMC:
     def __init__(self, energy_array, sample_name, angle, n_traj, cb_ref, track):
+        self.coincidence_histogram = None
         self.bse = None
         self.sey = None
         self.tey = None
@@ -498,7 +499,7 @@ class SEEMC:
             self.current_energy = energy
             e_statistics = []
             for traj in tqdm(range(self.n_trajectories)):
-                e_statistics.extend(self.run_trajectory(traj))
+                e_statistics.append(self.run_trajectory(traj))
             self.electron_list.append(e_statistics)
         print("--- %s seconds ---" % (time.time() - start_time))
         if plot_yields:
@@ -511,13 +512,14 @@ class SEEMC:
         self.bse = np.zeros(len(self.energy_array))
 
         for i in range(len(self.energy_array)):
-            for e in self.electron_list[i]:
-                if not e.inside and not e.dead:
-                    self.tey[i] += 1
-                    if e.is_secondary:
-                        self.sey[i] += 1
-                    else:
-                        self.bse[i] += 1
+            for j in range(len(self.electron_list[i])):
+                for e in self.electron_list[i][j]:
+                    if not e.inside and not e.dead:
+                        self.tey[i] += 1
+                        if e.is_secondary:
+                            self.sey[i] += 1
+                        else:
+                            self.bse[i] += 1
 
         self.tey /= self.n_trajectories
         self.sey /= self.n_trajectories
@@ -547,6 +549,32 @@ class SEEMC:
                     self.se_depth_histogram.append(e.initial_depth)
                 else:
                     self.pe_depth_histogram.append(e.initial_depth)
+
+
+    def calculate_coincidence_histogram(self, true_pairs=True):
+        self.coincidence_histogram = []
+        for j in range(len(self.electron_list[0])):
+            for e in self.electron_list[0][j]:
+                if not e.dead and e.is_secondary:
+                    if not self.electron_list[0][j][e.parent_index].dead:
+                        if true_pairs:
+                            if (e.energy + e.inner_potential == self.electron_list[0][j][e.parent_index].energy_loss +
+                                    self.electron_list[0][j][e.parent_index].energy_se):
+                                self.coincidence_histogram.append(
+                                    [self.electron_list[0][j][e.parent_index].energy, e.energy])
+                        else:
+                            self.coincidence_histogram.append(
+                                [self.electron_list[0][j][e.parent_index].energy, e.energy])
+
+
+    def plot_coincidence_histogram(self, n_bins):
+        coincidences = np.array(self.coincidence_histogram)
+        plt.figure()
+        plt.hist2d(coincidences[:, 0], coincidences[:, 1])
+        plt.set_cmap('turbo')
+        plt.xlabel('Energy of PE (eV)')
+        plt.ylabel('Energy of SE (eV)')
+
 
     def plot_yield(self):
         plt.figure()
