@@ -9,6 +9,7 @@ import time
 import plotly.graph_objects as go
 from tqdm import tqdm
 import multiprocessing
+from types import SimpleNamespace
 
 
 class Sample:
@@ -469,7 +470,8 @@ class SEEMC:
                    'inside': electron_array[i].inside}
             if self.track_trajectories:
                 res['coordinates'] = electron_array[i].coordinates
-            electron_data.append(res)
+            electron_data.append(SimpleNamespace(**res))
+            electron_array[i] = None
             i += 1
         return electron_data
 
@@ -508,9 +510,9 @@ class SEEMC:
 
         for i in range(len(self.energy_array)):
             for e in self.electron_list[i]:
-                if not e['inside'] and not e['dead']:
+                if not e.inside and not e.dead:
                     self.tey[i] += 1
-                    if e['is_secondary']:
+                    if e.is_secondary:
                         self.sey[i] += 1
                     else:
                         self.bse[i] += 1
