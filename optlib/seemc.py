@@ -9,6 +9,8 @@ import time
 import plotly.graph_objects as go
 from tqdm import tqdm
 import multiprocessing
+from types import SimpleNamespace
+import gc
 
 
 class Sample:
@@ -384,42 +386,44 @@ class Electron:
         self.uvw[2] /= norm
 
     def escape(self):
-        if not self.dead:
-            theta = math.acos(self.uvw[2])
-            phi = math.atan2(self.uvw[1], self.uvw[0])
-            if self.xyz[2] < 0:
-                if self.sample.is_metal and self.conduction_band_reference:
-                    ecos = (self.energy - self.sample.material_data['e_gap'] - self.sample.material_data['e_vb']) * \
-                           self.uvw[2] ** 2
-                    ui = self.sample.material_data['affinity']
-                else:
-                    ecos = self.energy * self.uvw[2] ** 2
-                    ui = self.inner_potential
-                if ecos > ui:
-                    t = 4 * math.sqrt(1 - ui / ecos) / ((1 + math.sqrt(1 - ui / ecos)) ** 2)
-                else:
-                    t = 0
-                if random.random() < t:
-                    self.inside = False
-                    theta_vacuum = math.asin(math.sin(theta) * math.sqrt(self.energy / (self.energy - ui)))
-                    self.energy -= self.inner_potential
-                    self.calculate_direction(theta_vacuum, phi)
-                    if self.save_coordinates:
-                        self.xyz[0] += 100 * self.uvw[0]
-                        self.xyz[1] += 100 * self.uvw[1]
-                        self.xyz[2] += 100 * self.uvw[2]
-                        coord_vector = [round(elem, 2) for elem in self.xyz + [self.energy]]
-                        self.coordinates.append(coord_vector)
-                else:
-                    self.uvw[2] *= -1
-                    self.xyz[2] = 1e-10
-                    if self.save_coordinates:
-                        coord_vector = [round(elem, 2) for elem in self.xyz + [self.energy]]
-                        self.coordinates.append(coord_vector)
+        theta = math.acos(self.uvw[2])
+        phi = math.atan2(self.uvw[1], self.uvw[0])
+        if self.xyz[2] < 0:
+            if not self.sample.is_metal and self.conduction_band_reference:
+                ecos = (self.energy - self.sample.material_data['e_gap'] - self.sample.material_data['e_vb']) * \
+                       self.uvw[2] ** 2
+                ui = self.sample.material_data['affinity']
+            else:
+                ecos = self.energy * self.uvw[2] ** 2
+                ui = self.inner_potential
+            if ecos > ui:
+                t = 4 * math.sqrt(1 - ui / ecos) / ((1 + math.sqrt(1 - ui / ecos)) ** 2)
+            else:
+                t = 0
+            if random.random() < t:
+                self.inside = False
+                theta_vacuum = math.asin(math.sin(theta) * math.sqrt(self.energy / (self.energy - ui)))
+                self.energy -= self.inner_potential
+                self.calculate_direction(theta_vacuum, phi)
+                if self.save_coordinates:
+                    self.xyz[0] += 100 * self.uvw[0]
+                    self.xyz[1] += 100 * self.uvw[1]
+                    self.xyz[2] += 100 * self.uvw[2]
+                    coord_vector = [round(elem, 2) for elem in self.xyz + [self.energy]]
+                    self.coordinates.append(coord_vector)
+                return True
+            else:
+                self.uvw[2] *= -1
+                self.xyz[2] = 1e-10
+                if self.save_coordinates:
+                    coord_vector = [round(elem, 2) for elem in self.xyz + [self.energy]]
+                    self.coordinates.append(coord_vector)
+                return False
 
 
 class SEEMC:
     def __init__(self, energy_array, sample_name, angle, n_traj, cb_ref, track):
+        self.coincidence_histogram = None
         self.bse = None
         self.sey = None
         self.tey = None
@@ -434,32 +438,43 @@ class SEEMC:
 
 
     def run_trajectory(self, trajectory):
+        electron_array = []
         electron_data = []
         i = 0
-        electron_data.append(Electron(self.sample, self.current_energy, self.cb_ref, self.track_trajectories, [0, 0, 0],
-                             [math.sin(self.incident_angle), 0, math.cos(self.incident_angle)], 0,
-                             False, -1))
-        while i < len(electron_data):
-            while electron_data[i].inside and not electron_data[i].dead:
+        electron_array.append(Electron(self.sample, self.current_energy, self.cb_ref, self.track_trajectories, [0, 0, 0],
+                                       [math.sin(self.incident_angle), 0, math.cos(self.incident_angle)], 0,
+                                       False, -1))
+        while i < len(electron_array):
+            while electron_array[i].inside and not electron_array[i].dead:
                 se_xyz = [0, 0, 0]
-                electron_data[i].travel()
-                electron_data[i].escape()
-                if electron_data[i].inside and not electron_data[i].dead:
-                    electron_data[i].get_scattering_type()
-                    if electron_data[i].scatter():
-                        se_energy = electron_data[i].energy_loss + electron_data[i].energy_se
-                        if se_energy > electron_data[i].inner_potential:
-                            se_xyz[0] = electron_data[i].xyz[0]
-                            se_xyz[1] = electron_data[i].xyz[1]
-                            se_xyz[2] = electron_data[i].xyz[2]
-                            se_uvw = electron_data[i].change_direction(electron_data[i].uvw, [
-                                math.asin(math.cos(electron_data[i].deflection[0])),
-                                electron_data[i].deflection[1] + math.pi])
-                            electron_data[i].n_secondaries += 1
-                            electron_data.append(
+                electron_array[i].travel()
+                if not electron_array[i].escape():
+                    electron_array[i].get_scattering_type()
+                    if electron_array[i].scatter():
+                        se_energy = electron_array[i].energy_loss + electron_array[i].energy_se
+                        if se_energy > electron_array[i].inner_potential:
+                            se_xyz[0] = electron_array[i].xyz[0]
+                            se_xyz[1] = electron_array[i].xyz[1]
+                            se_xyz[2] = electron_array[i].xyz[2]
+                            se_uvw = electron_array[i].change_direction(electron_array[i].uvw, [
+                                math.asin(math.cos(electron_array[i].deflection[0])),
+                                electron_array[i].deflection[1] + math.pi])
+                            electron_array[i].n_secondaries += 1
+                            electron_array.append(
                                 Electron(self.sample, se_energy, self.cb_ref, self.track_trajectories, se_xyz,
-                                         se_uvw, electron_data[i].generation + 1, True, i))
+                                         se_uvw, electron_array[i].generation + 1, True, i))
+
+            res = {'energy': electron_array[i].energy, 'inner_potential': electron_array[i].inner_potential,
+                   'energy_loss': electron_array[i].energy_loss, 'energy_se': electron_array[i].energy_se,
+                   'is_secondary': electron_array[i].is_secondary, 'generation': electron_array[i].generation,
+                   'parent_index': electron_array[i].parent_index, 'dead': electron_array[i].dead,
+                   'inside': electron_array[i].inside}
+            if self.track_trajectories:
+                res['coordinates'] = electron_array[i].coordinates
+            electron_data.append(SimpleNamespace(**res))
+            electron_array[i] = None
             i += 1
+        gc.collect()
         return electron_data
 
 
@@ -471,7 +486,8 @@ class SEEMC:
             self.current_energy = energy
             with multiprocessing.Pool(multiprocessing.cpu_count()) as pool:
                 res = pool.map(self.run_trajectory, range(self.n_trajectories))
-            self.electron_list.append([element for innerList in res for element in innerList])
+            # self.electron_list.append([element for innerList in res for element in innerList])
+            self.electron_list.append(res)
 
         print("--- %s seconds ---" % (time.time() - start_time))
 
@@ -480,33 +496,10 @@ class SEEMC:
 
         for energy in self.energy_array:
             print(energy)
+            self.current_energy = energy
             e_statistics = []
-            i = 0
-            for _ in tqdm(range(self.n_trajectories)):
-                e_statistics.append(Electron(self.sample, energy, self.cb_ref, self.track_trajectories, [0, 0, 0],
-                                             [math.sin(self.incident_angle), 0, math.cos(self.incident_angle)], 0,
-                                             False, -1))
-                while i < len(e_statistics):
-                    while e_statistics[i].inside and not e_statistics[i].dead:
-                        se_xyz = [0, 0, 0]
-                        e_statistics[i].travel()
-                        e_statistics[i].escape()
-                        if e_statistics[i].inside and not e_statistics[i].dead:
-                            e_statistics[i].get_scattering_type()
-                            if e_statistics[i].scatter():
-                                se_energy = e_statistics[i].energy_loss + e_statistics[i].energy_se
-                                if se_energy > e_statistics[i].inner_potential:
-                                    se_xyz[0] = e_statistics[i].xyz[0]
-                                    se_xyz[1] = e_statistics[i].xyz[1]
-                                    se_xyz[2] = e_statistics[i].xyz[2]
-                                    se_uvw = e_statistics[i].change_direction(e_statistics[i].uvw, [
-                                        math.asin(math.cos(e_statistics[i].deflection[0])),
-                                        e_statistics[i].deflection[1] + math.pi])
-                                    e_statistics[i].n_secondaries += 1
-                                    e_statistics.append(
-                                        Electron(self.sample, se_energy, self.cb_ref, self.track_trajectories, se_xyz,
-                                                 se_uvw, e_statistics[i].generation + 1, True, i))
-                    i += 1
+            for traj in tqdm(range(self.n_trajectories)):
+                e_statistics.append(self.run_trajectory(traj))
             self.electron_list.append(e_statistics)
         print("--- %s seconds ---" % (time.time() - start_time))
         if plot_yields:
@@ -519,13 +512,14 @@ class SEEMC:
         self.bse = np.zeros(len(self.energy_array))
 
         for i in range(len(self.energy_array)):
-            for e in self.electron_list[i]:
-                if not e.inside and not e.dead:
-                    self.tey[i] += 1
-                    if e.is_secondary:
-                        self.sey[i] += 1
-                    else:
-                        self.bse[i] += 1
+            for j in range(len(self.electron_list[i])):
+                for e in self.electron_list[i][j]:
+                    if not e.inside and not e.dead:
+                        self.tey[i] += 1
+                        if e.is_secondary:
+                            self.sey[i] += 1
+                        else:
+                            self.bse[i] += 1
 
         self.tey /= self.n_trajectories
         self.sey /= self.n_trajectories
@@ -555,6 +549,32 @@ class SEEMC:
                     self.se_depth_histogram.append(e.initial_depth)
                 else:
                     self.pe_depth_histogram.append(e.initial_depth)
+
+
+    def calculate_coincidence_histogram(self, true_pairs=True):
+        self.coincidence_histogram = []
+        for j in range(len(self.electron_list[0])):
+            for e in self.electron_list[0][j]:
+                if not e.dead and e.is_secondary:
+                    if not self.electron_list[0][j][e.parent_index].dead:
+                        if true_pairs:
+                            if (e.energy + e.inner_potential == self.electron_list[0][j][e.parent_index].energy_loss +
+                                    self.electron_list[0][j][e.parent_index].energy_se):
+                                self.coincidence_histogram.append(
+                                    [self.electron_list[0][j][e.parent_index].energy, e.energy])
+                        else:
+                            self.coincidence_histogram.append(
+                                [self.electron_list[0][j][e.parent_index].energy, e.energy])
+
+
+    def plot_coincidence_histogram(self, n_bins):
+        coincidences = np.array(self.coincidence_histogram)
+        plt.figure()
+        plt.hist2d(coincidences[:, 0], coincidences[:, 1])
+        plt.set_cmap('turbo')
+        plt.xlabel('Energy of PE (eV)')
+        plt.ylabel('Energy of SE (eV)')
+
 
     def plot_yield(self):
         plt.figure()
