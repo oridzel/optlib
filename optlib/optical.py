@@ -1304,6 +1304,7 @@ class Material:
 
 
 	def diimfp_interp_fpa_mermin(self,e,rbs,nq = 100,de = 0.5):
+		print('Updated')
 		if self.is_metal:		
 			e0 = e/h2ev
 			self.diimfp_e = linspace(1e-5, e - self.e_fermi, de)
