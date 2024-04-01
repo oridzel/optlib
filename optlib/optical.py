@@ -1330,6 +1330,10 @@ class Material:
 			self.q = q_ru
 			self.eloss = self.diimfp_e
 			self.calculate_elf()
+			plt.figure()
+			plt.pcolor(q_ru,self.diimfp_e,self.elf,cmap='turbo')
+			plt.title('Mermin')
+			plt.show()
 			elf_interp[ind] = self.elf[ind]
 		
 		rel_coef = ((1 + e0/(c**2))**2) / (1 + e0/(2*c**2))
