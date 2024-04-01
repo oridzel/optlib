@@ -1304,7 +1304,8 @@ class Material:
 
 
 	def diimfp_interp_fpa_mermin(self,e,rbs,nq = 100,de = 0.5):
-		if self.is_metal:
+		if self.is_metal:		
+			e0 = e/h2ev
 			self.diimfp_e = linspace(1e-5, e - self.e_fermi, de)
 		else:
 			if e < 2*self.e_gap + self.width_of_the_valence_band:
@@ -1326,7 +1327,7 @@ class Material:
 
 		ind = np.isnan(elf_interp)
 		if np.any(ind):
-			self.q = np.exp(q)/a0
+			self.q = q_ru
 			self.calculate_elf()
 			elf_interp[ind] = self.elf[ind]
 		
