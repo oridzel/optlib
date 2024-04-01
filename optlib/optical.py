@@ -1325,25 +1325,12 @@ class Material:
 		eloss_ru = np.transpose(np.tile(self.diimfp_e,(nq,1)))
 		elf_interp = rbs(eloss_ru,q_ru, grid=False)
 
-		plt.figure()
-		plt.pcolor(q_ru,self.diimfp_e,elf_interp,cmap='turbo')
-		plt.title('FPA interp before Mermin')
-		plt.show()
-
 		ind = eloss_ru > fpa_eloss[-1]
 		if np.any(ind):
 			self.q = q_ru
 			self.eloss = self.diimfp_e
 			self.calculate_elf()
-			plt.figure()
-			plt.pcolor(q_ru,self.diimfp_e,self.elf,cmap='turbo')
-			plt.title('Mermin')
-			plt.show()
 			elf_interp[ind] = self.elf[ind]
-			plt.figure()
-			plt.pcolor(q_ru,self.diimfp_e,elf_interp,cmap='turbo')
-			plt.title('FPA interp after Mermin')
-			plt.show()
 		
 		rel_coef = ((1 + e0/(c**2))**2) / (1 + e0/(2*c**2))
 		iimfp = rel_coef * 1/(math.pi*e0) * np.trapz( elf_interp, q, axis = 1 )
