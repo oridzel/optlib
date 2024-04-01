@@ -123,7 +123,6 @@ class Electron:
         self.dead = False
         self.scattering_type = -1
         self.n_secondaries = 0
-        # self.energy_se = 0
         self.energy_loss = 0
         self.path_length = 0
         self.deflection = [0, 0]
@@ -233,7 +232,7 @@ class Electron:
             self.energy -= self.energy_loss
             self.is_dead()
             if not self.dead:
-                # self.feg_dos()
+                self.feg_dos()
                 if self.sample.is_metal:
                     min_energy = 1
                 else:
