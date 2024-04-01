@@ -1328,6 +1328,7 @@ class Material:
 
 		ind = np.isnan(elf_interp)
 		if np.any(ind):
+			print('Mermin part')
 			self.q = q_ru
 			self.eloss = self.diimfp_e
 			self.calculate_elf()
