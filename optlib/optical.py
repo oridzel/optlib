@@ -1330,7 +1330,7 @@ class Material:
 		plt.title('FPA interp before Mermin')
 		plt.show()
 
-		ind = eloss_ru < fpa_eloss[-1]
+		ind = eloss_ru > fpa_eloss[-1]
 		if np.any(ind):
 			self.q = q_ru
 			self.eloss = self.diimfp_e
