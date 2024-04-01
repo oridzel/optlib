@@ -1326,7 +1326,7 @@ class Material:
 		elf_interp = rbs(eloss_ru,q_ru, grid=False)
 
 		plt.figure()
-		plt.pcolor(q_ru,self.diimfp_e,self.elf,cmap='turbo')
+		plt.pcolor(q_ru,self.diimfp_e,elf_interp,cmap='turbo')
 		plt.title('FPA interp before Mermin')
 		plt.show()
 
@@ -1341,7 +1341,7 @@ class Material:
 			plt.show()
 			elf_interp[ind] = self.elf[ind]
 			plt.figure()
-			plt.pcolor(q_ru,self.diimfp_e,self.elf,cmap='turbo')
+			plt.pcolor(q_ru,self.diimfp_e,elf_interp,cmap='turbo')
 			plt.title('FPA interp after Mermin')
 			plt.show()
 		
