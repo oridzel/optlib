@@ -210,9 +210,10 @@ class Electron:
 
     def scatter(self):
         self.deflection[1] = random.random() * 2 * math.pi
+        ind = np.absolute(self.sample.material_data['energy'] - self.energy).argmin()
         if self.scattering_type == 0:
-            decs = self.sample.get_decs(self.energy)
-            # decs = np.squeeze(self.sample.material_data['decs'][:, ind])
+            # decs = self.sample.get_decs(self.energy)
+            decs = np.squeeze(self.sample.material_data['decs'][:, ind])
             cumsigma = integrate.cumtrapz(2 * math.pi * decs * np.sin(self.sample.material_data['decs_theta']),
                                           self.sample.material_data['decs_theta'], initial=0)
             self.deflection[0] = np.interp(random.random() * cumsigma[-1], cumsigma,
@@ -221,9 +222,9 @@ class Electron:
             self.uvw = self.change_direction(self.uvw,self.deflection)
             return False
         elif self.scattering_type == 1:
-            [eloss, diimfp] = self.sample.get_diimfp(self.energy)
-            # eloss = np.squeeze(self.sample.material_data['diimfp'][:, 0, ind])
-            # diimfp = np.squeeze(self.sample.material_data['diimfp'][:, 1, ind])
+            # [eloss, diimfp] = self.sample.get_diimfp(self.energy)
+            eloss = np.squeeze(self.sample.material_data['diimfp'][:, 0, ind])
+            diimfp = np.squeeze(self.sample.material_data['diimfp'][:, 1, ind])
             cumdiimfp = integrate.cumtrapz(diimfp, eloss, initial=0)
             while True:
                 self.energy_loss = np.interp(random.random() * cumdiimfp[-1], cumdiimfp, eloss)
