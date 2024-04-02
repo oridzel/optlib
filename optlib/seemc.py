@@ -232,7 +232,7 @@ class Electron:
             self.energy -= self.energy_loss
             self.is_dead()
             if not self.dead:
-                # self.feg_dos()
+                self.feg_dos()
                 if self.sample.is_metal:
                     min_energy = 1
                 else:
@@ -277,12 +277,11 @@ class Electron:
             e_ref = self.sample.material_data['e_fermi']
         else:
             e_ref = self.sample.material_data['e_vb']
-        y_min = 0
-        y_max = math.sqrt(e_ref * (e_ref + self.energy_loss))
-        e = 0
-        while y_min + random.random() * (y_max - y_min) > math.sqrt(e * (e + self.energy_loss)):
-            e = e_ref * random.random()
-        self.energy_se = e
+
+        ener = np.linspace(0,e_ref,100)
+        dist = np.sqrt(ener * (ener + self.energy_loss))
+        cumdos = integrate.cumtrapz(dist, ener, initial=0)
+        self.energy_se = np.interp(random.random() * cumdos[-1], cumdos, ener)
 
     def linterp(self, ind, y):
         if self.sample.material_data['energy'][ind + 1] > self.energy >= self.sample.material_data['energy'][ind]:
