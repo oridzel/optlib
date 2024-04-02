@@ -232,7 +232,7 @@ class Electron:
             self.energy -= self.energy_loss
             self.is_dead()
             if not self.dead:
-                self.feg_dos()
+                # self.feg_dos()
                 if self.sample.is_metal:
                     min_energy = 1
                 else:
