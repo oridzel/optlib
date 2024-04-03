@@ -534,22 +534,26 @@ class SEEMC:
     def calculate_energy_histogram(self, energy_index=0):
         self.se_energy_histogram = []
         self.pe_energy_histogram = []
-        for e in self.electron_list[energy_index]:
-            if not e.inside:
-                if e.is_secondary:
-                    self.se_energy_histogram.append(e.energy)
-                else:
-                    self.pe_energy_histogram.append(e.energy)
+
+        for j in range(len(self.electron_list[energy_index])):
+            for e in self.electron_list[energy_index][j]:
+                if not e.inside:
+                    if e.is_secondary:
+                        self.se_energy_histogram.append(e.energy)
+                    else:
+                        self.pe_energy_histogram.append(e.energy)
 
     def calculate_depth_histogram(self, energy_index=0):
         self.se_depth_histogram = []
         self.pe_depth_histogram = []
-        for e in self.electron_list[energy_index]:
-            if not e.inside:
-                if e.is_secondary:
-                    self.se_depth_histogram.append(e.initial_depth)
-                else:
-                    self.pe_depth_histogram.append(e.initial_depth)
+
+        for j in range(len(self.electron_list[energy_index])):
+            for e in self.electron_list[energy_index][j]:
+                if not e.inside:
+                    if e.is_secondary:
+                        self.se_depth_histogram.append(e.initial_depth)
+                    else:
+                        self.pe_depth_histogram.append(e.initial_depth)
 
 
     def calculate_coincidence_histogram(self, true_pairs=True):
