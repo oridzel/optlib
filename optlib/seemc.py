@@ -485,7 +485,8 @@ class SEEMC:
             print(energy)
             self.current_energy = energy
             with multiprocessing.Pool(multiprocessing.cpu_count()) as pool:
-                res = pool.map(self.run_trajectory, range(self.n_trajectories))
+                res = tqdm(pool.imap(self.run_trajectory, range(self.n_trajectories)), total=self.n_trajectories)
+                # res = pool.map(self.run_trajectory, range(self.n_trajectories))
             # self.electron_list.append([element for innerList in res for element in innerList])
             self.electron_list.append(res)
 
