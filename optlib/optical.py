@@ -230,7 +230,7 @@ class Material:
 			eps_real -= self.oscillators.A[i] * eps_drude_real
 			eps_imag += self.oscillators.A[i] * eps_drude_imag
 
-		if self.e_gap > 0:
+		if self.e_gap > 0 and self.zero_gap:
 			if len(eps_imag.shape) > 1:
 				eps_imag[self.eloss <= self.e_gap,0] = 1e-5
 			else:
