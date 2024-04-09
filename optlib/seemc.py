@@ -210,9 +210,10 @@ class Electron:
 
     def scatter(self):
         self.deflection[1] = random.random() * 2 * math.pi
+        ind = np.absolute(self.sample.material_data['energy'] - self.energy).argmin()
         if self.scattering_type == 0:
-            decs = self.sample.get_decs(self.energy)
-            # decs = np.squeeze(self.sample.material_data['decs'][:, ind])
+            # decs = self.sample.get_decs(self.energy)
+            decs = np.squeeze(self.sample.material_data['decs'][:, ind])
             cumsigma = integrate.cumtrapz(2 * math.pi * decs * np.sin(self.sample.material_data['decs_theta']),
                                           self.sample.material_data['decs_theta'], initial=0)
             self.deflection[0] = np.interp(random.random() * cumsigma[-1], cumsigma,
@@ -221,9 +222,9 @@ class Electron:
             self.uvw = self.change_direction(self.uvw,self.deflection)
             return False
         elif self.scattering_type == 1:
-            [eloss, diimfp] = self.sample.get_diimfp(self.energy)
-            # eloss = np.squeeze(self.sample.material_data['diimfp'][:, 0, ind])
-            # diimfp = np.squeeze(self.sample.material_data['diimfp'][:, 1, ind])
+            # [eloss, diimfp] = self.sample.get_diimfp(self.energy)
+            eloss = np.squeeze(self.sample.material_data['diimfp'][:, 0, ind])
+            diimfp = np.squeeze(self.sample.material_data['diimfp'][:, 1, ind])
             cumdiimfp = integrate.cumtrapz(diimfp, eloss, initial=0)
             while True:
                 self.energy_loss = np.interp(random.random() * cumdiimfp[-1], cumdiimfp, eloss)
@@ -277,12 +278,11 @@ class Electron:
             e_ref = self.sample.material_data['e_fermi']
         else:
             e_ref = self.sample.material_data['e_vb']
-        y_min = 0
-        y_max = math.sqrt(e_ref * (e_ref + self.energy_loss))
-        e = 0
-        while y_min + random.random() * (y_max - y_min) > math.sqrt(e * (e + self.energy_loss)):
-            e = e_ref * random.random()
-        self.energy_se = e
+
+        ener = np.linspace(0,e_ref,100)
+        dist = np.sqrt(ener * (ener + self.energy_loss))
+        cumdos = integrate.cumtrapz(dist, ener, initial=0)
+        self.energy_se = np.interp(random.random() * cumdos[-1], cumdos, ener)
 
     def linterp(self, ind, y):
         if self.sample.material_data['energy'][ind + 1] > self.energy >= self.sample.material_data['energy'][ind]:
@@ -485,7 +485,8 @@ class SEEMC:
             print(energy)
             self.current_energy = energy
             with multiprocessing.Pool(multiprocessing.cpu_count()) as pool:
-                res = pool.map(self.run_trajectory, range(self.n_trajectories))
+                res = list(tqdm(pool.imap(self.run_trajectory, range(self.n_trajectories)), total=self.n_trajectories))
+                # res = pool.map(self.run_trajectory, range(self.n_trajectories))
             # self.electron_list.append([element for innerList in res for element in innerList])
             self.electron_list.append(res)
 
@@ -533,22 +534,26 @@ class SEEMC:
     def calculate_energy_histogram(self, energy_index=0):
         self.se_energy_histogram = []
         self.pe_energy_histogram = []
-        for e in self.electron_list[energy_index]:
-            if not e.inside:
-                if e.is_secondary:
-                    self.se_energy_histogram.append(e.energy)
-                else:
-                    self.pe_energy_histogram.append(e.energy)
+
+        for j in range(len(self.electron_list[energy_index])):
+            for e in self.electron_list[energy_index][j]:
+                if not e.inside:
+                    if e.is_secondary:
+                        self.se_energy_histogram.append(e.energy)
+                    else:
+                        self.pe_energy_histogram.append(e.energy)
 
     def calculate_depth_histogram(self, energy_index=0):
         self.se_depth_histogram = []
         self.pe_depth_histogram = []
-        for e in self.electron_list[energy_index]:
-            if not e.inside:
-                if e.is_secondary:
-                    self.se_depth_histogram.append(e.initial_depth)
-                else:
-                    self.pe_depth_histogram.append(e.initial_depth)
+
+        for j in range(len(self.electron_list[energy_index])):
+            for e in self.electron_list[energy_index][j]:
+                if not e.inside:
+                    if e.is_secondary:
+                        self.se_depth_histogram.append(e.initial_depth)
+                    else:
+                        self.pe_depth_histogram.append(e.initial_depth)
 
 
     def calculate_coincidence_histogram(self, true_pairs=True):
