@@ -149,6 +149,7 @@ class Material:
 		self.elf_extended_to_henke = None
 		self.elf_henke = None
 		self.eloss_henke = None
+		self.henke_limit = 100
 		self.surfaceELF = None
 		self.diimfp = None
 		self.diimfp_e = None
@@ -873,7 +874,7 @@ class Material:
 		self.calculate_elf()
 		if self.eloss_henke is None and self.elf_henke is None:
 			self.eloss_henke, self.elf_henke = self.mopt()
-		ind = self.eloss < 100
+		ind = self.eloss < self.henke_limit
 		self.eloss_extended_to_henke = np.concatenate((self.eloss[ind], self.eloss_henke))
 		self.elf_extended_to_henke = np.concatenate((self.elf[ind], self.elf_henke))
 
@@ -881,7 +882,7 @@ class Material:
 		if self.atomic_density is None:
 			raise InputError("Please specify the value of the atomic density atomic_density")
 		numberOfElements = len(self.composition.elements)
-		energy = linspace(100,30000)
+		energy = linspace(self.henke_limit,30000)
 		f1sum = np.zeros_like(energy)
 		f2sum = np.zeros_like(energy)
 

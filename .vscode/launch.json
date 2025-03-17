@@ -1,0 +1,13 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "C:/Users/onr5/OneDrive - NIST/dev/python/optlib/examples/test_seemc.py",
+            "console": "integratedTerminal",
+            "cwd": "C:/Users/onr5/OneDrive - NIST/dev/python/optlib/examples/"
+        }
+    ]
+}
