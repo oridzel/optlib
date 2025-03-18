@@ -167,6 +167,7 @@ class Material:
 		self.electron_density_henke = 0
 		self.use_kk_relation = False
 		self.is_metal = True
+		self.zero_gap = True
 
 	@property
 	def q(self):
