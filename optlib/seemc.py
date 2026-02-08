@@ -15,6 +15,14 @@ import gc
 import math
 import os
 
+def cumtrapz_numpy(y, x):
+    """Cumulative trapezoid integral, same length as x (initial=0)."""
+    y = np.asarray(y, dtype=float)
+    x = np.asarray(x, dtype=float)
+    dx = np.diff(x)
+    area = 0.5 * (y[1:] + y[:-1]) * dx
+    return np.concatenate(([0.0], np.cumsum(area)))
+
 class Sample:
     T = 300  # K
     k_B = 8.617e-5  # eV/K
@@ -82,53 +90,74 @@ class Sample:
 
     # ---------- CDF caches ----------
     def get_elastic_theta_cdf(self, ind):
-        """CDF over theta for elastic scattering at energy bin ind."""
-        cached = self._elastic_theta_cdf_cache.get(ind)
+        cached = self._elastic_theta_cdf_cache.get(int(ind))
         if cached is not None:
             return cached
-
+    
         theta = np.asarray(self.material_data['decs_theta'], dtype=float)
-        decs = np.asarray(self.material_data['decs'][:, ind], dtype=float)
-
-        pdf = 2.0 * math.pi * decs * np.sin(theta)
+        decs = np.asarray(self.material_data['decs'][:, int(ind)], dtype=float)
+    
+        # sanity (cheap and useful)
+        if theta.ndim != 1 or decs.ndim != 1 or len(theta) != len(decs):
+            raise ValueError(f"Bad shapes: theta {theta.shape}, decs {decs.shape}")
+        if not np.all(np.diff(theta) > 0):
+            raise ValueError("decs_theta must be strictly increasing")
+    
+        pdf = 2*np.pi * decs * np.sin(theta)
         pdf = np.nan_to_num(pdf, nan=0.0, posinf=0.0, neginf=0.0)
-
-        cdf = cumulative_trapezoid(pdf, theta, initial=0.0)
+    
+        cdf = cumtrapz_numpy(pdf, theta)
         total = float(cdf[-1])
+    
         if total > 0 and np.isfinite(total):
-            cdf = cdf / total
+            cdf /= total
         else:
-            # fallback: isotropic => CDF for cos(theta) uniform -> theta pdf ~ sin(theta)
-            # Use explicit isotropic CDF: CDF(theta)= (1-cos(theta))/2 over [0,pi]
-            # But your theta grid is 0..pi/2 typically; keep a monotonic safe cdf
             cdf = np.linspace(0.0, 1.0, len(theta))
-
+    
         out = (theta, cdf)
-        self._elastic_theta_cdf_cache[ind] = out
+        self._elastic_theta_cdf_cache[int(ind)] = out
         return out
 
     def get_inelastic_eloss_cdf(self, ind):
-        """CDF over energy loss for inelastic scattering at energy bin ind."""
+        """
+        Returns (eloss_grid, cdf) with cdf normalized to [0,1],
+        or (eloss_grid, None) if no inelastic at this energy bin.
+        """
+        ind = int(ind)
         cached = self._inelastic_eloss_cdf_cache.get(ind)
         if cached is not None:
             return cached
-
+    
         eloss = np.asarray(self.material_data['diimfp'][:, 0, ind], dtype=float)
         diimfp = np.asarray(self.material_data['diimfp'][:, 1, ind], dtype=float)
-
+    
+        # Basic sanity
+        if eloss.ndim != 1 or diimfp.ndim != 1 or eloss.size != diimfp.size:
+            raise ValueError(f"Bad diimfp shapes: eloss {eloss.shape}, diimfp {diimfp.shape}")
+        if eloss.size < 2:
+            out = (eloss, None)
+            self._inelastic_eloss_cdf_cache[ind] = out
+            return out
+        if not np.all(np.diff(eloss) >= 0):
+            # should be increasing; if not, sort once
+            order = np.argsort(eloss)
+            eloss = eloss[order]
+            diimfp = diimfp[order]
+    
         pdf = np.nan_to_num(diimfp, nan=0.0, posinf=0.0, neginf=0.0)
-        cdf = cumulative_trapezoid(pdf, eloss, initial=0.0)
+        cdf = cumtrapz_numpy(pdf, eloss)
         total = float(cdf[-1])
-
+    
         if total > 0 and np.isfinite(total):
-            cdf = cdf / total
+            cdf /= total
+            out = (eloss, cdf)
         else:
-            # no inelastic at this bin
-            cdf = None
-
-        out = (eloss, cdf)
+            # no inelastic at this energy bin (matches your DB logic below e_fermi)
+            out = (eloss, None)
+    
         self._inelastic_eloss_cdf_cache[ind] = out
         return out
+
 
     # ---------- ELF spline (build once) ----------
     def elf_spline(self):
@@ -445,6 +474,9 @@ class SEEMC:
     def run_one_trajectory(self, E0, traj_id):
         seed = (os.getpid() * 1_000_003 + traj_id) & 0xFFFFFFFF
         rng = np.random.default_rng(seed)
+
+        if traj_id == 0:
+            print("E0", E0, "E_F", self.sample.material_data.get("e_fermi"), "WF", self.sample.material_data.get("work_function"))
 
         # counts
         tey = 0
