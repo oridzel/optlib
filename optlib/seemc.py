@@ -2,6 +2,7 @@ import numpy as np
 from optlib.constants import *
 import pickle
 from scipy import integrate
+from scipy.integrate import cumulative_trapezoid
 from scipy.interpolate import RectBivariateSpline
 import random
 import matplotlib.pyplot as plt
@@ -92,7 +93,7 @@ class Sample:
         pdf = 2.0 * math.pi * decs * np.sin(theta)
         pdf = np.nan_to_num(pdf, nan=0.0, posinf=0.0, neginf=0.0)
 
-        cdf = integrate.cumtrapz(pdf, theta, initial=0.0)
+        cdf = cumulative_trapezoid(pdf, theta, initial=0.0)
         total = float(cdf[-1])
         if total > 0 and np.isfinite(total):
             cdf = cdf / total
@@ -116,7 +117,7 @@ class Sample:
         diimfp = np.asarray(self.material_data['diimfp'][:, 1, ind], dtype=float)
 
         pdf = np.nan_to_num(diimfp, nan=0.0, posinf=0.0, neginf=0.0)
-        cdf = integrate.cumtrapz(pdf, eloss, initial=0.0)
+        cdf = cumulative_trapezoid(pdf, eloss, initial=0.0)
         total = float(cdf[-1])
 
         if total > 0 and np.isfinite(total):
@@ -326,7 +327,7 @@ class Electron:
         # (we can cache later by binning dE if you want maximum speed)
         theta, ang = self.sample.angular_iimfp(self.energy + self.energy_loss, self.energy_loss)
         w = np.nan_to_num(ang, nan=0.0) * np.sin(theta)
-        cdf2 = integrate.cumtrapz(w, theta, initial=0.0)
+        cdf2 = cumulative_trapezoid(w, theta, initial=0.0)
         total = float(cdf2[-1])
         if total > 0 and np.isfinite(total):
             cdf2 = cdf2 / total
@@ -348,7 +349,7 @@ class Electron:
         ener = self.sample.dos_cdf()
         # energy_loss changes per event, so CDF changes; but we avoid rebuilding ener each time
         dist = np.sqrt(np.maximum(ener * (ener + self.energy_loss), 0.0))
-        cdf = integrate.cumtrapz(dist, ener, initial=0.0)
+        cdf = cumulative_trapezoid(dist, ener, initial=0.0)
         total = float(cdf[-1])
         if total > 0 and np.isfinite(total):
             cdf = cdf / total
