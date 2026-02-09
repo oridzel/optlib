@@ -61,6 +61,9 @@ class Sample:
         self._inelastic_eloss_cdf_cache = {} # ind -> (eloss, cdf)
         self._elf_spline = None              # RectBivariateSpline for ELF
         self._dos_cdf_cache = None           # (ener_grid, cdf) for DOS sampling
+        self._precompute_inelastic_cdfs()
+        self._precompute_elastic_cdfs()
+
 
     # ---------- safe interpolation helpers ----------
     def _clip_E(self, E):
@@ -90,73 +93,16 @@ class Sample:
 
     # ---------- CDF caches ----------
     def get_elastic_theta_cdf(self, ind):
-        cached = self._elastic_theta_cdf_cache.get(int(ind))
-        if cached is not None:
-            return cached
-    
-        theta = np.asarray(self.material_data['decs_theta'], dtype=float)
-        decs = np.asarray(self.material_data['decs'][:, int(ind)], dtype=float)
-    
-        # sanity (cheap and useful)
-        if theta.ndim != 1 or decs.ndim != 1 or len(theta) != len(decs):
-            raise ValueError(f"Bad shapes: theta {theta.shape}, decs {decs.shape}")
-        if not np.all(np.diff(theta) > 0):
-            raise ValueError("decs_theta must be strictly increasing")
-    
-        pdf = 2*np.pi * decs * np.sin(theta)
-        pdf = np.nan_to_num(pdf, nan=0.0, posinf=0.0, neginf=0.0)
-    
-        cdf = cumtrapz_numpy(pdf, theta)
-        total = float(cdf[-1])
-    
-        if total > 0 and np.isfinite(total):
-            cdf /= total
-        else:
-            cdf = np.linspace(0.0, 1.0, len(theta))
-    
-        out = (theta, cdf)
-        self._elastic_theta_cdf_cache[int(ind)] = out
-        return out
+        ind = int(ind)
+        return self._elastic_theta, self._elastic_cdf_all[:, ind]
+
 
     def get_inelastic_eloss_cdf(self, ind):
-        """
-        Returns (eloss_grid, cdf) with cdf normalized to [0,1],
-        or (eloss_grid, None) if no inelastic at this energy bin.
-        """
         ind = int(ind)
-        cached = self._inelastic_eloss_cdf_cache.get(ind)
-        if cached is not None:
-            return cached
-    
-        eloss = np.asarray(self.material_data['diimfp'][:, 0, ind], dtype=float)
-        diimfp = np.asarray(self.material_data['diimfp'][:, 1, ind], dtype=float)
-    
-        # Basic sanity
-        if eloss.ndim != 1 or diimfp.ndim != 1 or eloss.size != diimfp.size:
-            raise ValueError(f"Bad diimfp shapes: eloss {eloss.shape}, diimfp {diimfp.shape}")
-        if eloss.size < 2:
-            out = (eloss, None)
-            self._inelastic_eloss_cdf_cache[ind] = out
-            return out
-        if not np.all(np.diff(eloss) >= 0):
-            # should be increasing; if not, sort once
-            order = np.argsort(eloss)
-            eloss = eloss[order]
-            diimfp = diimfp[order]
-    
-        pdf = np.nan_to_num(diimfp, nan=0.0, posinf=0.0, neginf=0.0)
-        cdf = cumtrapz_numpy(pdf, eloss)
-        total = float(cdf[-1])
-    
-        if total > 0 and np.isfinite(total):
-            cdf /= total
-            out = (eloss, cdf)
-        else:
-            # no inelastic at this energy bin (matches your DB logic below e_fermi)
-            out = (eloss, None)
-    
-        self._inelastic_eloss_cdf_cache[ind] = out
-        return out
+        if not self._inel_has[ind]:
+            # still return an eloss grid for shape consistency
+            return self._inel_eloss_all[:, ind], None
+        return self._inel_eloss_all[:, ind], self._inel_cdf_all[:, ind]
 
 
     # ---------- ELF spline (build once) ----------
@@ -220,6 +166,72 @@ class Sample:
             ener = np.linspace(0.0, e_ref, 400)
             self._dos_cdf_cache = ener
         return self._dos_cdf_cache
+
+
+    def _precompute_elastic_cdfs(self):
+        theta = np.asarray(self.material_data['decs_theta'], dtype=float)
+        decs = np.asarray(self.material_data['decs'], dtype=float)  # (Ntheta, Nenergy)
+    
+        if theta.ndim != 1 or decs.ndim != 2 or decs.shape[0] != theta.size:
+            raise ValueError(f"Bad elastic shapes: theta {theta.shape}, decs {decs.shape}")
+        if not np.all(np.diff(theta) > 0):
+            raise ValueError("decs_theta must be strictly increasing")
+    
+        pdf = 2*np.pi * decs * np.sin(theta)[:, None]
+        pdf = np.nan_to_num(pdf, nan=0.0, posinf=0.0, neginf=0.0)
+    
+        dx = np.diff(theta)[:, None]                    # (Ntheta-1, 1)
+        area = 0.5 * (pdf[1:, :] + pdf[:-1, :]) * dx    # (Ntheta-1, Nenergy)
+        cdf = np.vstack([np.zeros((1, pdf.shape[1])), np.cumsum(area, axis=0)])  # (Ntheta, Nenergy)
+    
+        total = cdf[-1, :]
+        # avoid divide-by-zero
+        good = (total > 0) & np.isfinite(total)
+        cdf[:, good] /= total[good]
+        cdf[:, ~good] = np.linspace(0.0, 1.0, theta.size)[:, None]
+    
+        self._elastic_theta = theta
+        self._elastic_cdf_all = cdf
+
+    def _precompute_inelastic_cdfs(self):
+        """
+        Precompute CDFs for diimfp over energy loss for all energy bins.
+        Stores:
+          self._inel_eloss_all: (Neloss, Nenergy)
+          self._inel_cdf_all:   (Neloss, Nenergy) normalized where valid
+          self._inel_has:       (Nenergy,) boolean where integral>0
+        """
+        di = np.asarray(self.material_data['diimfp'], dtype=float)  # (Neloss, 2, Nenergy)
+        if di.ndim != 3 or di.shape[1] != 2:
+            raise ValueError(f"Expected diimfp shape (Neloss,2,Nenergy), got {di.shape}")
+    
+        eloss = di[:, 0, :]   # (Neloss, Nenergy)
+        pdf   = di[:, 1, :]   # (Neloss, Nenergy)
+    
+        # Replace bad values
+        pdf = np.nan_to_num(pdf, nan=0.0, posinf=0.0, neginf=0.0)
+    
+        # We assume eloss is nondecreasing in axis 0 for each energy bin (true in your DB build).
+        # Compute trapezoid cumulative sum along axis 0 for each column.
+        dx = np.diff(eloss, axis=0)                             # (Neloss-1, Nenergy)
+        area = 0.5 * (pdf[1:, :] + pdf[:-1, :]) * dx           # (Neloss-1, Nenergy)
+    
+        cdf = np.vstack([np.zeros((1, area.shape[1])), np.cumsum(area, axis=0)])  # (Neloss, Nenergy)
+    
+        total = cdf[-1, :]                                      # (Nenergy,)
+        has = (total > 0) & np.isfinite(total)
+    
+        # Normalize only where valid
+        cdf_norm = np.zeros_like(cdf)
+        cdf_norm[:, has] = cdf[:, has] / total[has]
+        # For invalid bins, leave zeros (we'll treat as "no inelastic")
+        cdf_norm[:, ~has] = 0.0
+    
+        self._inel_eloss_all = eloss
+        self._inel_cdf_all = cdf_norm
+        self._inel_has = has
+
+
 
 
 class Electron:
