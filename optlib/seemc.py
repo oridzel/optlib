@@ -83,7 +83,10 @@ class Sample:
     def energy_index(self, E):
         """Nearest-neighbor bin using searchsorted (fast, stable)."""
         E = self._clip_E(E)
+        print(E)
         i = int(np.searchsorted(self.Egrid, E, side='left'))
+        print(i)
+        print(self.Egrid[i])
         if i <= 0:
             return 0
         if i >= len(self.Egrid):
