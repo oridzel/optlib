@@ -532,12 +532,19 @@ class SEEMC:
         ))
     
         traj_tracks = []
+
+        n_scatter = 0
+        max_scatter = 20000
     
         i = 0
         while i < len(electrons):
             e = electrons[i]
     
             while e.inside and (not e.dead):
+                if n_scatter >= max_scatter:
+                    e.dead = True
+                    break
+                    
                 e.travel()
                 if e.dead:
                     break
@@ -555,6 +562,7 @@ class SEEMC:
                     break
     
                 made_inelastic = e.scatter()
+                n_scatter += 1
                 if made_inelastic:
                     se_energy = e.energy_loss + e.energy_se
     
