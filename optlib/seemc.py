@@ -275,9 +275,11 @@ class Electron:
         self.energy_vac = None
 
         self.n_escape_calls = 0
-        self.n_escape_reflect = 0
+        self.n_escape_below_barrier = 0
+        self.n_escape_reflected_prob = 0
         self.n_escape_transmit = 0
-        self.last_escape_reason = None  # "not_at_surface" / "below_barrier" / "transmitted" / "reflected_prob"
+        self.min_Eperp_over_Ui = float("inf")
+        self.max_Eperp_over_Ui = 0.0
 
     # --- rates ---
     @property
@@ -418,9 +420,7 @@ class Electron:
             self.energy_se = 0.0
 
     def escape(self):
-        # not at surface
         if self.xyz[2] > 0.0:
-            self.last_escape_reason = "not_at_surface"
             return False
     
         self.n_escape_calls += 1
@@ -428,9 +428,12 @@ class Electron:
         Ui = self.Ui
         Eperp = self.energy * (self.uvw[2] ** 2)
     
+        ratio = Eperp / Ui if Ui > 0 else float("inf")
+        self.min_Eperp_over_Ui = min(self.min_Eperp_over_Ui, ratio)
+        self.max_Eperp_over_Ui = max(self.max_Eperp_over_Ui, ratio)
+    
         if self.energy <= Ui or Eperp <= Ui:
-            self.n_escape_reflect += 1
-            self.last_escape_reason = "below_barrier"
+            self.n_escape_below_barrier += 1   # <-- NEW
             self.uvw[2] *= -1
             self.xyz[2] = 1e-10
             if self.save_coordinates:
@@ -445,27 +448,13 @@ class Electron:
             Ev = self.energy - Ui
             self.energy_vac = Ev
             self.energy = Ev
-    
-            self.n_escape_transmit += 1
-            self.last_escape_reason = "transmitted"
-    
-            if self.save_coordinates:
-                self.xyz[0] += 100 * self.uvw[0]
-                self.xyz[1] += 100 * self.uvw[1]
-                self.xyz[2] += 100 * self.uvw[2]
-                self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
+            self.n_escape_transmit += 1        # <-- NEW
             return True
     
-        # reflect due to probability
-        self.n_escape_reflect += 1
-        self.last_escape_reason = "reflected_prob"
+        self.n_escape_reflected_prob += 1      # <-- NEW
         self.uvw[2] *= -1
         self.xyz[2] = 1e-10
-        if self.save_coordinates:
-            self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
         return False
-
-
 
     def change_direction(self, uvw, deflection):
         # normalized rotation (your earlier function but stable)
@@ -540,7 +529,7 @@ class SEEMC:
 
         n_scatter = 0
         max_scatter = 20000
-        escape_calls = escape_reflect = escape_transmit = 0
+        escape_calls = n_escape_below_barrier = escape_transmit = n_escape_reflected_prob = 0
  
         i = 0
         while i < len(electrons):
@@ -590,11 +579,18 @@ class SEEMC:
             electrons[i] = None
             i += 1
             escape_calls += e.n_escape_calls
-            escape_reflect += e.n_escape_reflect
             escape_transmit += e.n_escape_transmit
+            n_escape_below_barrier += e.n_escape_below_barrier
+            n_escape_reflected_prob += e.n_escape_reflected_prob
 
         if traj_id == 0:
-            print("escape_calls", escape_calls, "reflect", escape_reflect, "transmit", escape_transmit)
+            print("escape_calls", escape_calls,
+                  "below_barrier", below_barrier,
+                  "ref_prob", ref_prob,
+                  "transmit", escape_transmit,
+                  "min(Eperp/Ui)", e.min_Eperp_over_Ui,
+                  "max(Eperp/Ui)", e.max_Eperp_over_Ui)
+
 
         return tey, sey, bse, (traj_tracks if self.track_trajectories else None)
 
