@@ -521,6 +521,9 @@ class SEEMC:
         electrons = []
         Ui = self.sample.material_data['e_fermi'] + self.sample.material_data['work_function']
         E_s0 = E0 + Ui
+        Etest = 114.2
+        print("IMFP", self.sample.get_imfp(Etest), "EMFP", self.sample.get_emfp(Etest))
+
     
         electrons.append(Electron(
             self.sample, E_s0, self.cb_ref, self.track_trajectories,
