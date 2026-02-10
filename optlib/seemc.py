@@ -527,6 +527,9 @@ class SEEMC:
             xyz=[0, 0, 0], uvw=[math.sin(self.incident_angle), 0, math.cos(self.incident_angle)],
             gen=0, se=False, ind=-1, rng=rng
         ))
+
+        if traj_id == 0:
+            print("Init primary: E0(vac)=", E0, "Ui=", Ui, "Es0=", electrons[0].energy)
     
         traj_tracks = []
 
@@ -552,6 +555,10 @@ class SEEMC:
                 if e.dead:
                     break
 
+                if self.sample.is_metal and e.energy <= e.e_fermi:
+                    e.dead = True
+                    break
+
                 if e.escape():
                     tey += 1
                     if e.is_secondary:
@@ -565,6 +572,10 @@ class SEEMC:
                     break
     
                 made_inelastic = e.scatter()
+                # thermalization in metals: below or at EF, electron is absorbed
+                if self.sample.is_metal and e.energy <= e.e_fermi:
+                    e.dead = True
+                    break
                 n_scatter += 1
                 if made_inelastic:
                     se_energy = e.energy_loss + e.energy_se
