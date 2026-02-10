@@ -431,6 +431,9 @@ class Electron:
         ratio = Eperp / Ui if Ui > 0 else float("inf")
         self.min_Eperp_over_Ui = min(self.min_Eperp_over_Ui, ratio)
         self.max_Eperp_over_Ui = max(self.max_Eperp_over_Ui, ratio)
+
+        if self.n_escape_calls <= 10:
+            print("Es", self.energy, "uz", self.uvw[2], "Eperp/Ui", Eperp/Ui)
     
         if self.energy <= Ui or Eperp <= Ui:
             self.n_escape_below_barrier += 1   # <-- NEW
@@ -529,8 +532,13 @@ class SEEMC:
 
         n_scatter = 0
         max_scatter = 20000
-        escape_calls = n_escape_below_barrier = escape_transmit = n_escape_reflected_prob = 0
- 
+        min_ratio = float("inf")
+        max_ratio = 0.0
+        below_barrier = 0
+        ref_prob = 0
+        transmit = 0
+        escape_calls = 0
+
         i = 0
         while i < len(electrons):
             e = electrons[i]
@@ -579,17 +587,21 @@ class SEEMC:
             electrons[i] = None
             i += 1
             escape_calls += e.n_escape_calls
-            escape_transmit += e.n_escape_transmit
-            n_escape_below_barrier += e.n_escape_below_barrier
-            n_escape_reflected_prob += e.n_escape_reflected_prob
+            below_barrier += e.n_escape_below_barrier
+            ref_prob += e.n_escape_reflected_prob
+            transmit += e.n_escape_transmit
+            
+            min_ratio = min(min_ratio, e.min_Eperp_over_Ui)
+            max_ratio = max(max_ratio, e.max_Eperp_over_Ui)
 
         if traj_id == 0:
             print("escape_calls", escape_calls,
-                  "below_barrier", n_escape_below_barrier,
-                  "ref_prob", n_escape_reflected_prob,
-                  "transmit", escape_transmit,
-                  "min(Eperp/Ui)", e.min_Eperp_over_Ui,
-                  "max(Eperp/Ui)", e.max_Eperp_over_Ui)
+                  "below_barrier", below_barrier,
+                  "ref_prob", ref_prob,
+                  "transmit", transmit,
+                  "min(Eperp/Ui)", min_ratio,
+                  "max(Eperp/Ui)", max_ratio)
+
 
 
         return tey, sey, bse, (traj_tracks if self.track_trajectories else None)
