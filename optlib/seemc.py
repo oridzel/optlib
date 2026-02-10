@@ -540,9 +540,7 @@ class SEEMC:
 
         n_scatter = 0
         max_scatter = 20000
-        surface_hits = 0
-        escape_trials = 0
-        transmitted = 0
+        escape_calls = escape_reflect = escape_transmit = 0
  
         i = 0
         while i < len(electrons):
