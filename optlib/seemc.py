@@ -511,8 +511,8 @@ class SEEMC:
         seed = (os.getpid() * 1_000_003 + traj_id) & 0xFFFFFFFF
         rng = np.random.default_rng(seed)
     
-        if traj_id == 0:
-            print("E0", E0, "E_F", self.sample.material_data.get("e_fermi"), "WF", self.sample.material_data.get("work_function"))
+        # if traj_id == 0:
+        #     print("E0", E0, "E_F", self.sample.material_data.get("e_fermi"), "WF", self.sample.material_data.get("work_function"))
     
         tey = 0
         sey = 0
@@ -521,8 +521,8 @@ class SEEMC:
         electrons = []
         Ui = self.sample.material_data['e_fermi'] + self.sample.material_data['work_function']
         E_s0 = E0 + Ui
-        Etest = 114.2
-        print("IMFP", self.sample.get_imfp(Etest), "EMFP", self.sample.get_emfp(Etest))
+        # Etest = 114.2
+        # print("IMFP", self.sample.get_imfp(Etest), "EMFP", self.sample.get_emfp(Etest))
 
     
         electrons.append(Electron(
@@ -531,19 +531,19 @@ class SEEMC:
             gen=0, se=False, ind=-1, rng=rng
         ))
 
-        if traj_id == 0:
-            print("Init primary: E0(vac)=", E0, "Ui=", Ui, "Es0=", electrons[0].energy)
+        # if traj_id == 0:
+        #     print("Init primary: E0(vac)=", E0, "Ui=", Ui, "Es0=", electrons[0].energy)
     
         traj_tracks = []
 
         n_scatter = 0
-        max_scatter = 20000
-        min_ratio = float("inf")
-        max_ratio = 0.0
-        below_barrier = 0
-        ref_prob = 0
-        transmit = 0
-        escape_calls = 0
+        max_scatter = 50000
+        # min_ratio = float("inf")
+        # max_ratio = 0.0
+        # below_barrier = 0
+        # ref_prob = 0
+        # transmit = 0
+        # escape_calls = 0
 
         i = 0
         while i < len(electrons):
@@ -600,21 +600,21 @@ class SEEMC:
     
             electrons[i] = None
             i += 1
-            escape_calls += e.n_escape_calls
-            below_barrier += e.n_escape_below_barrier
-            ref_prob += e.n_escape_reflected_prob
-            transmit += e.n_escape_transmit
+        #     escape_calls += e.n_escape_calls
+        #     below_barrier += e.n_escape_below_barrier
+        #     ref_prob += e.n_escape_reflected_prob
+        #     transmit += e.n_escape_transmit
             
-            min_ratio = min(min_ratio, e.min_Eperp_over_Ui)
-            max_ratio = max(max_ratio, e.max_Eperp_over_Ui)
+        #     min_ratio = min(min_ratio, e.min_Eperp_over_Ui)
+        #     max_ratio = max(max_ratio, e.max_Eperp_over_Ui)
 
-        if traj_id == 0:
-            print("escape_calls", escape_calls,
-                  "below_barrier", below_barrier,
-                  "ref_prob", ref_prob,
-                  "transmit", transmit,
-                  "min(Eperp/Ui)", min_ratio,
-                  "max(Eperp/Ui)", max_ratio)
+        # if traj_id == 0:
+        #     print("escape_calls", escape_calls,
+        #           "below_barrier", below_barrier,
+        #           "ref_prob", ref_prob,
+        #           "transmit", transmit,
+        #           "min(Eperp/Ui)", min_ratio,
+        #           "max(Eperp/Ui)", max_ratio)
 
 
 
