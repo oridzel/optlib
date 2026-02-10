@@ -585,8 +585,8 @@ class SEEMC:
 
         if traj_id == 0:
             print("escape_calls", escape_calls,
-                  "below_barrier", below_barrier,
-                  "ref_prob", ref_prob,
+                  "below_barrier", n_escape_below_barrier,
+                  "ref_prob", n_escape_reflected_prob,
                   "transmit", escape_transmit,
                   "min(Eperp/Ui)", e.min_Eperp_over_Ui,
                   "max(Eperp/Ui)", e.max_Eperp_over_Ui)
