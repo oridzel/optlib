@@ -298,8 +298,17 @@ class Electron:
         return self.iemfp + self.iimfp  # (phonons omitted here; add back later if needed)
 
     def is_dead(self):
+        # basic
         if (not np.isfinite(self.energy)) or self.energy <= 0.0:
             self.dead = True
+            return
+    
+        # METAL THERMALIZATION RULE:
+        # Once an electron's solid energy drops to EF or below, it merges into the Fermi sea.
+        if self.sample.is_metal and self.inside and self.energy <= self.e_fermi:
+            self.dead = True
+            return
+
 
     # --- transport ---
     def travel(self):
