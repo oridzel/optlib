@@ -232,8 +232,6 @@ class Sample:
         self._inel_has = has
 
 
-
-
 class Electron:
     def __init__(self, sample: Sample, energy, cb_ref, save_coord, xyz, uvw, gen, se, ind, rng):
         self.sample = sample
@@ -246,7 +244,8 @@ class Electron:
         self.parent_index = int(ind)
         self.rng = rng
 
-        # kinetic energy in eV
+        # --- ENERGY CONVENTION ---
+        # While inside the solid: energy is E_s referenced to valence-band bottom (VB bottom = 0).
         self.energy = float(energy)
         self.initial_energy = self.energy
         self.initial_depth = self.xyz[2]
@@ -268,6 +267,12 @@ class Electron:
         # material params
         self.work_function = float(self.sample.material_data.get('work_function', 0.0))
         self.e_fermi = float(self.sample.material_data.get('e_fermi', 0.0))
+
+        # Full barrier from VB bottom to vacuum level for metals: Ui = Ef + phi
+        self.Ui = self.e_fermi + self.work_function
+    
+        # Optional: store vacuum energy upon emission (None while inside)
+        self.energy_vac = None
 
     # --- rates ---
     @property
@@ -402,24 +407,36 @@ class Electron:
         # always returns bool
         if self.xyz[2] > 0.0:
             return False
-
-        # metal: barrier is work function
-        U = self.work_function
-
+    
+        # For metals with VB-bottom reference: barrier is Ui = Ef + phi
+        Ui = self.Ui
+    
+        # normal component of solid energy
         Eperp = self.energy * (self.uvw[2] ** 2)
-        if self.energy <= U or Eperp <= U:
-            # reflect
+    
+        # cannot overcome barrier -> reflect
+        if self.energy <= Ui or Eperp <= Ui:
             self.uvw[2] *= -1
             self.xyz[2] = 1e-10
             if self.save_coordinates:
                 self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
             return False
-
-        # transmission probability (your chosen model)
-        t = 4 * math.sqrt(1 - U / Eperp) / ((1 + math.sqrt(1 - U / Eperp)) ** 2)
+    
+        # transmission probability (your model; uses Eperp and barrier height)
+        root = math.sqrt(1.0 - Ui / Eperp)
+        t = 4.0 * root / ((1.0 + root) ** 2)
+    
         if self.rng.random() < t:
             self.inside = False
-            self.energy -= U
+    
+            # convert to vacuum kinetic energy at emission
+            Ev = self.energy - Ui
+            self.energy_vac = Ev
+    
+            # Option A (recommended): keep self.energy as solid-scale value for bookkeeping,
+            # but for output you use energy_vac. If you prefer, uncomment next line:
+            self.energy = Ev  # now energy is vacuum kinetic energy after escape
+    
             if self.save_coordinates:
                 # push into vacuum for visualization
                 self.xyz[0] += 100 * self.uvw[0]
@@ -427,13 +444,14 @@ class Electron:
                 self.xyz[2] += 100 * self.uvw[2]
                 self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
             return True
-
+    
         # reflect
         self.uvw[2] *= -1
         self.xyz[2] = 1e-10
         if self.save_coordinates:
             self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
         return False
+
 
     def change_direction(self, uvw, deflection):
         # normalized rotation (your earlier function but stable)
@@ -486,55 +504,55 @@ class SEEMC:
     def run_one_trajectory(self, E0, traj_id):
         seed = (os.getpid() * 1_000_003 + traj_id) & 0xFFFFFFFF
         rng = np.random.default_rng(seed)
-
+    
         if traj_id == 0:
             print("E0", E0, "E_F", self.sample.material_data.get("e_fermi"), "WF", self.sample.material_data.get("work_function"))
-
-        # counts
+    
         tey = 0
         sey = 0
         bse = 0
-
-        # electron stack
+    
         electrons = []
+        Ui = self.sample.material_data['e_fermi'] + self.sample.material_data['work_function']
+        E_s0 = E0 + Ui
+    
         electrons.append(Electron(
-            self.sample, E0, self.cb_ref, self.track_trajectories,
+            self.sample, E_s0, self.cb_ref, self.track_trajectories,
             xyz=[0, 0, 0], uvw=[math.sin(self.incident_angle), 0, math.cos(self.incident_angle)],
             gen=0, se=False, ind=-1, rng=rng
         ))
-
-        # optional track for this trajectory
+    
         traj_tracks = []
-
+    
         i = 0
         while i < len(electrons):
             e = electrons[i]
-
+    
             while e.inside and (not e.dead):
                 e.travel()
                 if e.dead:
                     break
-
+    
                 if e.escape():
-                    # emitted
                     tey += 1
                     if e.is_secondary:
                         sey += 1
                     else:
                         bse += 1
                     break
-
+    
                 e.get_scattering_type()
                 if e.dead:
                     break
-
+    
                 made_inelastic = e.scatter()
                 if made_inelastic:
-                    # spawn secondary if your rule says so
                     se_energy = e.energy_loss + e.energy_se
-                    U = e.work_function if self.sample.is_metal else 0.0
-                    if se_energy > U:
-                        # recoil-ish direction
+    
+                    # spawn criterion (metal): only above EF for this model
+                    if self.sample.is_metal and se_energy <= e.e_fermi:
+                        pass
+                    else:
                         se_defl = [math.pi - e.deflection[0], (e.deflection[1] + math.pi) % (2*math.pi)]
                         se_uvw = e.change_direction(e.uvw, se_defl)
                         se_xyz = e.xyz.copy()
@@ -542,14 +560,15 @@ class SEEMC:
                             self.sample, se_energy, self.cb_ref, self.track_trajectories,
                             xyz=se_xyz, uvw=se_uvw, gen=e.generation + 1, se=True, ind=i, rng=rng
                         ))
-
+    
             if self.track_trajectories:
                 traj_tracks.append(e.coordinates)
-
+    
             electrons[i] = None
             i += 1
-
+    
         return tey, sey, bse, (traj_tracks if self.track_trajectories else None)
+
 
     def run_simulation(self, use_parallel=False):
         import time
