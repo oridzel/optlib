@@ -274,6 +274,11 @@ class Electron:
         # Optional: store vacuum energy upon emission (None while inside)
         self.energy_vac = None
 
+        self.n_escape_calls = 0
+        self.n_escape_reflect = 0
+        self.n_escape_transmit = 0
+        self.last_escape_reason = None  # "not_at_surface" / "below_barrier" / "transmitted" / "reflected_prob"
+
     # --- rates ---
     @property
     def iemfp(self):
@@ -413,53 +418,53 @@ class Electron:
             self.energy_se = 0.0
 
     def escape(self):
-        # always returns bool
+        # not at surface
         if self.xyz[2] > 0.0:
+            self.last_escape_reason = "not_at_surface"
             return False
     
-        # For metals with VB-bottom reference: barrier is Ui = Ef + phi
-        Ui = self.Ui
+        self.n_escape_calls += 1
     
-        # normal component of solid energy
+        Ui = self.Ui
         Eperp = self.energy * (self.uvw[2] ** 2)
     
-        # cannot overcome barrier -> reflect
         if self.energy <= Ui or Eperp <= Ui:
+            self.n_escape_reflect += 1
+            self.last_escape_reason = "below_barrier"
             self.uvw[2] *= -1
             self.xyz[2] = 1e-10
             if self.save_coordinates:
                 self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
             return False
     
-        # transmission probability (your model; uses Eperp and barrier height)
         root = math.sqrt(1.0 - Ui / Eperp)
         t = 4.0 * root / ((1.0 + root) ** 2)
     
         if self.rng.random() < t:
             self.inside = False
-    
-            # convert to vacuum kinetic energy at emission
             Ev = self.energy - Ui
             self.energy_vac = Ev
+            self.energy = Ev
     
-            # Option A (recommended): keep self.energy as solid-scale value for bookkeeping,
-            # but for output you use energy_vac. If you prefer, uncomment next line:
-            self.energy = Ev  # now energy is vacuum kinetic energy after escape
+            self.n_escape_transmit += 1
+            self.last_escape_reason = "transmitted"
     
             if self.save_coordinates:
-                # push into vacuum for visualization
                 self.xyz[0] += 100 * self.uvw[0]
                 self.xyz[1] += 100 * self.uvw[1]
                 self.xyz[2] += 100 * self.uvw[2]
                 self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
             return True
     
-        # reflect
+        # reflect due to probability
+        self.n_escape_reflect += 1
+        self.last_escape_reason = "reflected_prob"
         self.uvw[2] *= -1
         self.xyz[2] = 1e-10
         if self.save_coordinates:
             self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
         return False
+
 
 
     def change_direction(self, uvw, deflection):
@@ -535,7 +540,10 @@ class SEEMC:
 
         n_scatter = 0
         max_scatter = 20000
-    
+        surface_hits = 0
+        escape_trials = 0
+        transmitted = 0
+ 
         i = 0
         while i < len(electrons):
             e = electrons[i]
@@ -548,7 +556,7 @@ class SEEMC:
                 e.travel()
                 if e.dead:
                     break
-    
+
                 if e.escape():
                     tey += 1
                     if e.is_secondary:
@@ -583,7 +591,13 @@ class SEEMC:
     
             electrons[i] = None
             i += 1
-    
+            escape_calls += e.n_escape_calls
+            escape_reflect += e.n_escape_reflect
+            escape_transmit += e.n_escape_transmit
+
+        if traj_id == 0:
+            print("escape_calls", escape_calls, "reflect", escape_reflect, "transmit", escape_transmit)
+
         return tey, sey, bse, (traj_tracks if self.track_trajectories else None)
 
 
