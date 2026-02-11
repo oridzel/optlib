@@ -614,10 +614,7 @@ class SEEMC:
     def run_one_trajectory(self, E0, traj_id):
         seed = (os.getpid() * 1_000_003 + traj_id) & 0xFFFFFFFF
         rng = np.random.default_rng(seed)
-    
-        # if traj_id == 0:
-        #     print("E0", E0, "E_F", self.sample.material_data.get("e_fermi"), "WF", self.sample.material_data.get("work_function"))
-    
+        
         tey = 0
         sey = 0
         bse = 0
@@ -625,9 +622,6 @@ class SEEMC:
         electrons = []
         Ui = self.sample.material_data['e_fermi'] + self.sample.material_data['work_function']
         E_s0 = E0 + Ui
-        # Etest = 114.2
-        # print("IMFP", self.sample.get_imfp(Etest), "EMFP", self.sample.get_emfp(Etest))
-
     
         electrons.append(Electron(
             self.sample, E_s0, self.cb_ref, self.track_trajectories,
@@ -635,35 +629,14 @@ class SEEMC:
             gen=0, se=False, ind=-1, rng=rng
         ))
 
-        # if traj_id == 0:
-        #     print("Init primary: E0(vac)=", E0, "Ui=", Ui, "Es0=", electrons[0].energy)
-    
-        traj_tracks = []
-
-        n_scatter = 0
-        max_scatter = 50000
-        # min_ratio = float("inf")
-        # max_ratio = 0.0
-        # below_barrier = 0
-        # ref_prob = 0
-        # transmit = 0
-        # escape_calls = 0
-
         i = 0
         while i < len(electrons):
             e = electrons[i]
     
             while e.inside and (not e.dead):
-                if n_scatter >= max_scatter:
-                    e.dead = True
-                    break
                     
                 e.travel()
                 if e.dead:
-                    break
-
-                if self.sample.is_metal and e.energy <= e.e_fermi:
-                    e.dead = True
                     break
 
                 if e.escape():
@@ -679,11 +652,7 @@ class SEEMC:
                     break
     
                 made_inelastic = e.scatter()
-                # thermalization in metals: below or at EF, electron is absorbed
-                if self.sample.is_metal and e.energy <= e.e_fermi:
-                    e.dead = True
-                    break
-                n_scatter += 1
+
                 if made_inelastic:
                     se_energy = e.energy_loss + e.energy_se
     
@@ -704,73 +673,9 @@ class SEEMC:
     
             electrons[i] = None
             i += 1
-        #     escape_calls += e.n_escape_calls
-        #     below_barrier += e.n_escape_below_barrier
-        #     ref_prob += e.n_escape_reflected_prob
-        #     transmit += e.n_escape_transmit
-            
-        #     min_ratio = min(min_ratio, e.min_Eperp_over_Ui)
-        #     max_ratio = max(max_ratio, e.max_Eperp_over_Ui)
-
-        # if traj_id == 0:
-        #     print("escape_calls", escape_calls,
-        #           "below_barrier", below_barrier,
-        #           "ref_prob", ref_prob,
-        #           "transmit", transmit,
-        #           "min(Eperp/Ui)", min_ratio,
-        #           "max(Eperp/Ui)", max_ratio)
-
-
 
         return tey, sey, bse, (traj_tracks if self.track_trajectories else None)
 
-
-    def run_simulation_old(self, use_parallel=False):
-        import time
-        from tqdm import tqdm
-        import multiprocessing as mp
-
-        t0 = time.time()
-
-        for k, E0 in enumerate(self.energy_array):
-            if not use_parallel:
-                t_tey = t_sey = t_bse = 0
-                tracks_E = [] if self.track_trajectories else None
-
-                for traj in tqdm(range(self.n_trajectories), desc=f"E={E0:.1f} eV"):
-                    tey, sey, bse, trk = self.run_one_trajectory(E0, traj)
-                    t_tey += tey
-                    t_sey += sey
-                    t_bse += bse
-                    if self.track_trajectories:
-                        tracks_E.append(trk)
-
-                self.tey[k] = t_tey / self.n_trajectories
-                self.sey[k] = t_sey / self.n_trajectories
-                self.bse[k] = t_bse / self.n_trajectories
-                if self.track_trajectories:
-                    self.tracks.append(tracks_E)
-            else:
-                # parallel: return just counts (avoid huge pickles)
-                with mp.Pool(mp.cpu_count()) as pool:
-                    results = list(tqdm(
-                        pool.starmap(self.run_one_trajectory, [(E0, traj) for traj in range(self.n_trajectories)]),
-                        total=self.n_trajectories,
-                        desc=f"E={E0:.1f} eV"
-                    ))
-
-                t_tey = sum(r[0] for r in results)
-                t_sey = sum(r[1] for r in results)
-                t_bse = sum(r[2] for r in results)
-
-                self.tey[k] = t_tey / self.n_trajectories
-                self.sey[k] = t_sey / self.n_trajectories
-                self.bse[k] = t_bse / self.n_trajectories
-
-                if self.track_trajectories:
-                    self.tracks.append([r[3] for r in results])
-
-        print(f"Done in {time.time()-t0:.1f} s")
 
     def run_simulation(self, use_parallel=False):
         import time
