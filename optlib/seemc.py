@@ -816,13 +816,31 @@ class SEEMC:
         if not use_parallel:
             for k, E0 in enumerate(self.energy_array):
                 t_tey = t_sey = t_bse = 0
+                diag_E = {
+                    "n_transmit": 0,
+                    "n_reflect_barrier": 0,
+                    "n_reflect_prob": 0,
+                    "n_par2_clamp": 0,
+                    "max_inv_err": 0.0,
+                    "sum_inv_err": 0.0,
+                    "n_inv": 0
+                }
                 tracks_E = [] if self.track_trajectories else None
     
                 for traj in tqdm(range(self.n_trajectories), desc=f"E={E0:.1f} eV"):
-                    tey, sey, bse, trk = self.run_one_trajectory(E0, traj)
+                    tey, sey, bse, diag, trk = self.run_one_trajectory(E0, traj)
                     t_tey += tey
                     t_sey += sey
                     t_bse += bse
+                    
+                    diag_E["n_transmit"] += diag["n_transmit"]
+                    diag_E["n_reflect_barrier"] += diag["n_reflect_barrier"]
+                    diag_E["n_reflect_prob"] += diag["n_reflect_prob"]
+                    diag_E["n_par2_clamp"] += diag["n_par2_clamp"]
+                    diag_E["max_inv_err"] = max(diag_E["max_inv_err"], diag["max_inv_err"])
+                    diag_E["sum_inv_err"] += diag["sum_inv_err"]
+                    diag_E["n_inv"] += diag["n_inv"]
+
                     if self.track_trajectories:
                         tracks_E.append(trk)
     
@@ -831,6 +849,19 @@ class SEEMC:
                 self.bse[k] = t_bse / self.n_trajectories
                 if self.track_trajectories:
                     self.tracks.append(tracks_E)
+                if diag_E["n_inv"] > 0:
+                    avg_err = diag_E["sum_inv_err"] / diag_E["n_inv"]
+                else:
+                    avg_err = 0.0
+                
+                print(f"\nDiagnostics for E={E0:.1f} eV")
+                print(f"  Transmitted: {diag_E['n_transmit']}")
+                print(f"  Barrier reflections: {diag_E['n_reflect_barrier']}")
+                print(f"  Prob reflections: {diag_E['n_reflect_prob']}")
+                print(f"  par2 clamp count: {diag_E['n_par2_clamp']}")
+                print(f"  Max invariant error: {diag_E['max_inv_err']:.3e}")
+                print(f"  Avg invariant error: {avg_err:.3e}")
+
     
             print(f"Done in {time.time() - t0:.1f} s")
             return
