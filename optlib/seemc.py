@@ -13,6 +13,9 @@ from types import SimpleNamespace
 import gc
 import math
 import os
+from types import SimpleNamespace
+
+_G = None  # worker-global namespace
 
 def cumtrapz_numpy(y, x):
     """Cumulative trapezoid integral, same length as x (initial=0)."""
@@ -21,6 +24,126 @@ def cumtrapz_numpy(y, x):
     dx = np.diff(x)
     area = 0.5 * (y[1:] + y[:-1]) * dx
     return np.concatenate(([0.0], np.cumsum(area)))
+
+
+def _init_worker(sample_name, db_path, incident_angle, cb_ref, track_trajectories):
+    """
+    Runs once per worker process. Keeps heavy objects (Sample tables, splines, etc.)
+    local to the process so nothing big gets pickled per task.
+    """
+    global _G
+    sample = Sample(sample_name, db_path=db_path)
+
+    _G = SimpleNamespace(
+        sample=sample,
+        incident_angle=float(incident_angle),
+        cb_ref=bool(cb_ref),
+        track=bool(track_trajectories),
+    )
+
+
+def _run_one_trajectory_worker(args):
+    """
+    Worker task: run a single trajectory for a given primary energy.
+    args = (E0, traj_id, seed_base)
+    Returns: (tey, sey, bse, tracks_or_None)
+    """
+    global _G
+    E0, traj_id, seed_base = args
+
+    # robust per-task seed (also unique across processes)
+    # seed_base should already encode energy index / energy value
+    seed = (seed_base + 1_000_003 * (os.getpid() & 0xFFFF) + int(traj_id)) & 0xFFFFFFFF
+    rng = np.random.default_rng(seed)
+
+    sample = _G.sample
+
+    tey = 0
+    sey = 0
+    bse = 0
+
+    electrons = []
+    Ui = sample.material_data["e_fermi"] + sample.material_data["work_function"]
+    E_s0 = float(E0) + Ui
+
+    electrons.append(
+        Electron(
+            sample, E_s0, _G.cb_ref, _G.track,
+            xyz=[0.0, 0.0, 0.0],
+            uvw=[math.sin(_G.incident_angle), 0.0, math.cos(_G.incident_angle)],
+            gen=0, se=False, ind=-1, rng=rng
+        )
+    )
+
+    traj_tracks = []
+
+    n_scatter = 0
+    max_scatter = 50_000
+
+    i = 0
+    while i < len(electrons):
+        e = electrons[i]
+
+        while e.inside and (not e.dead):
+            if n_scatter >= max_scatter:
+                e.dead = True
+                break
+
+            e.travel()
+            if e.dead:
+                break
+
+            if sample.is_metal and e.energy <= e.e_fermi:
+                e.dead = True
+                break
+
+            if e.escape():
+                tey += 1
+                if e.is_secondary:
+                    sey += 1
+                else:
+                    bse += 1
+                break
+
+            e.get_scattering_type()
+            if e.dead:
+                break
+
+            made_inelastic = e.scatter()
+
+            # thermalization in metals
+            if sample.is_metal and e.energy <= e.e_fermi:
+                e.dead = True
+                break
+
+            n_scatter += 1
+
+            if made_inelastic:
+                se_energy = e.energy_loss + e.energy_se
+
+                # spawn criterion (metal): only above EF for this model
+                if sample.is_metal and se_energy <= e.e_fermi:
+                    pass
+                else:
+                    se_defl = [math.pi - e.deflection[0],
+                               (e.deflection[1] + math.pi) % (2 * math.pi)]
+                    se_uvw = e.change_direction(e.uvw, se_defl)
+                    se_xyz = e.xyz.copy()
+                    electrons.append(
+                        Electron(
+                            sample, se_energy, _G.cb_ref, _G.track,
+                            xyz=se_xyz, uvw=se_uvw, gen=e.generation + 1, se=True, ind=i, rng=rng
+                        )
+                    )
+
+        if _G.track:
+            traj_tracks.append(e.coordinates)
+
+        electrons[i] = None
+        i += 1
+
+    return tey, sey, bse, (traj_tracks if _G.track else None)
+    
 
 class Sample:
     T = 300  # K
@@ -613,7 +736,7 @@ class SEEMC:
         return tey, sey, bse, (traj_tracks if self.track_trajectories else None)
 
 
-    def run_simulation(self, use_parallel=False):
+    def run_simulation_old(self, use_parallel=False):
         import time
         from tqdm import tqdm
         import multiprocessing as mp
@@ -659,6 +782,80 @@ class SEEMC:
                     self.tracks.append([r[3] for r in results])
 
         print(f"Done in {time.time()-t0:.1f} s")
+
+    def run_simulation(self, use_parallel=False):
+        import time
+        import multiprocessing as mp
+        from tqdm import tqdm
+    
+        t0 = time.time()
+    
+        # Serial path unchanged
+        if not use_parallel:
+            for k, E0 in enumerate(self.energy_array):
+                t_tey = t_sey = t_bse = 0
+                tracks_E = [] if self.track_trajectories else None
+    
+                for traj in tqdm(range(self.n_trajectories), desc=f"E={E0:.1f} eV"):
+                    tey, sey, bse, trk = self.run_one_trajectory(E0, traj)
+                    t_tey += tey
+                    t_sey += sey
+                    t_bse += bse
+                    if self.track_trajectories:
+                        tracks_E.append(trk)
+    
+                self.tey[k] = t_tey / self.n_trajectories
+                self.sey[k] = t_sey / self.n_trajectories
+                self.bse[k] = t_bse / self.n_trajectories
+                if self.track_trajectories:
+                    self.tracks.append(tracks_E)
+    
+            print(f"Done in {time.time() - t0:.1f} s")
+            return
+    
+        # Parallel path: one Pool for all energies + worker globals
+        nproc = mp.cpu_count()
+    
+        # Good default chunking: bigger chunks reduce overhead a lot
+        chunksize = max(1, self.n_trajectories // (nproc * 4))
+    
+        # IMPORTANT: if you run on Windows, you must keep this under:
+        # if __name__ == "__main__":
+        ctx = mp.get_context("spawn")  # safest cross-platform; use "fork" on Linux for slightly less overhead
+    
+        with ctx.Pool(
+            processes=nproc,
+            initializer=_init_worker,
+            initargs=(self.sample.name, "MaterialDatabase.pkl", self.incident_angle, self.cb_ref, self.track_trajectories),
+        ) as pool:
+    
+            for k, E0 in enumerate(self.energy_array):
+                # seed_base encodes energy so different energies don't reuse RNG streams
+                seed_base = (k * 1_000_000 + int(round(float(E0) * 10))) & 0xFFFFFFFF
+    
+                tasks = ((float(E0), traj, seed_base) for traj in range(self.n_trajectories))
+    
+                t_tey = t_sey = t_bse = 0
+                tracks_E = [] if self.track_trajectories else None
+    
+                for tey, sey, bse, trk in tqdm(
+                    pool.imap_unordered(_run_one_trajectory_worker, tasks, chunksize=chunksize),
+                    total=self.n_trajectories,
+                    desc=f"E={E0:.1f} eV",
+                ):
+                    t_tey += tey
+                    t_sey += sey
+                    t_bse += bse
+                    if self.track_trajectories:
+                        tracks_E.append(trk)
+    
+                self.tey[k] = t_tey / self.n_trajectories
+                self.sey[k] = t_sey / self.n_trajectories
+                self.bse[k] = t_bse / self.n_trajectories
+                if self.track_trajectories:
+                    self.tracks.append(tracks_E)
+    
+        print(f"Done in {time.time() - t0:.1f} s")
 
     def plot_yield(self):
         import matplotlib.pyplot as plt
