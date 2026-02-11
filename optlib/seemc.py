@@ -204,6 +204,10 @@ class Sample:
     #     return float(np.interp(E, self.Egrid, self.material_data['emfp']))
 
     def get_emfp(self, E_solid):
+        self.e_fermi = float(self.material_data.get("e_fermi", 0.0))
+        self.work_function = float(self.material_data.get("work_function", 0.0))
+        self.Ui = self.e_fermi + self.work_function
+
         # Convert solid energy (VB bottom ref) -> vacuum kinetic energy
         E_vac = E_solid - self.Ui
     
