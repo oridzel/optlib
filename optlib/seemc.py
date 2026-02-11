@@ -500,8 +500,8 @@ class Electron:
             # elastic: use elastic-clamped energy bin
             # ind = self.sample.energy_index(max(self.energy, self.sample.elastic_min_energy))
             E_vac = self.energy - self.Ui
-                if E_vac <= 0:
-                    return False  # or kill; shouldn't elastically scatter below barrier
+            if E_vac <= 0:
+                return False  # or kill; shouldn't elastically scatter below barrier
                 
             ind = self.sample.energy_index(max(E_vac, self.sample.elastic_min_energy))
 
