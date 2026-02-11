@@ -93,7 +93,8 @@ def _run_one_trajectory_worker(args):
             if e.dead:
                 break
 
-            if sample.is_metal and e.energy <= e.e_fermi:
+            # if sample.is_metal and e.energy <= e.e_fermi:
+            if sample.is_metal and e.energy <= e.e_fermi+e.Ui:
                 e.dead = True
                 break
 
@@ -112,7 +113,8 @@ def _run_one_trajectory_worker(args):
             made_inelastic = e.scatter()
 
             # thermalization in metals
-            if sample.is_metal and e.energy <= e.e_fermi:
+            # if sample.is_metal and e.energy <= e.e_fermi:
+            if sample.is_metal and e.energy <= e.e_fermi+e.Ui:
                 e.dead = True
                 break
 
@@ -458,7 +460,8 @@ class Electron:
     
         # METAL THERMALIZATION RULE:
         # Once an electron's solid energy drops to EF or below, it merges into the Fermi sea.
-        if self.sample.is_metal and self.inside and self.energy <= self.e_fermi:
+        # if self.sample.is_metal and self.inside and self.energy <= self.e_fermi:
+        if self.sample.is_metal and self.inside and self.energy <= self.Ui:
             self.dead = True
             return
 
