@@ -2,7 +2,6 @@ import numpy as np
 from optlib.constants import *
 import pickle
 from scipy import integrate
-from scipy.integrate import cumulative_trapezoid
 from scipy.interpolate import RectBivariateSpline
 import random
 import matplotlib.pyplot as plt
@@ -63,6 +62,8 @@ class Sample:
         self._dos_cdf_cache = None           # (ener_grid, cdf) for DOS sampling
         self._precompute_inelastic_cdfs()
         self._precompute_elastic_cdfs()
+        self._theta_i = np.linspace(0.0, math.pi/2.0, 180)
+        self._sin_theta_i = np.sin(self._theta_i)
 
 
     # ---------- safe interpolation helpers ----------
@@ -108,12 +109,10 @@ class Sample:
     # ---------- ELF spline (build once) ----------
     def elf_spline(self):
         if self._elf_spline is None:
-            # Expect omega, q, elf in DB
-            omega = np.asarray(self.material_data['omega'], dtype=float)
-            q = np.asarray(self.material_data['q'], dtype=float)
-            elf = np.asarray(self.material_data['elf'], dtype=float)
-            # Your code used omega/h2ev and q*a0 elsewhere; keep your conventions there.
-            self._elf_spline = RectBivariateSpline(omega, q, elf)
+            omega_h = np.asarray(self.material_data['omega'], dtype=float) / h2ev
+            q_a0    = np.asarray(self.material_data['q'], dtype=float) * a0
+            elf     = np.asarray(self.material_data['elf'], dtype=float)
+            self._elf_spline = RectBivariateSpline(omega_h, q_a0, elf)
         return self._elf_spline
 
     # ---------- inelastic angular distribution ----------
@@ -122,7 +121,6 @@ class Sample:
         Return theta grid and angular distribution for a given incident kinetic E and loss dE.
         This is your existing formula with better numeric guards.
         """
-        theta = np.linspace(0.0, math.pi / 2.0, 180)
 
         # Convert to Hartree units if your existing code expects it.
         # Keep exactly your previous conversions if needed; I’m leaving these as placeholders:
@@ -132,21 +130,18 @@ class Sample:
 
         # guard
         if dE_h <= 0 or E_h <= dE_h:
-            return theta, np.zeros_like(theta)
+            return np.zeros_like(self._theta_i)
 
-        q2 = 4*E_h - 2*dE_h - 4*np.sqrt(E_h*(E_h-dE_h))*np.cos(theta)
+        q2 = 4*E_h - 2*dE_h - 4*np.sqrt(E_h*(E_h-dE_h))*np.cos(self._theta_i)
         q2 = np.maximum(q2, 1e-12)
 
-        f_rbs = RectBivariateSpline(self.material_data['omega'] / h2ev,
-                                    self.material_data['q'] * a0,
-                                    self.material_data['elf'])
-
+        f_rbs = self.elf_spline()
         x, y = np.meshgrid(np.array([dE_h]), np.sqrt(q2), indexing="ij")
         elf_vals = np.squeeze(f_rbs(x, y, grid=False))
 
         ang = (1.0 / (math.pi**2 * q2)) * np.sqrt(max(1.0 - dE_h / E_h, 0.0)) * elf_vals
         ang = np.nan_to_num(ang, nan=0.0, posinf=0.0, neginf=0.0)
-        return theta, ang
+        return ang
 
     # ---------- DOS sampling cache (for metals) ----------
     def dos_cdf(self):
@@ -387,13 +382,13 @@ class Electron:
 
         # inelastic angular distribution: still computed per-event
         # (we can cache later by binning dE if you want maximum speed)
-        theta, ang = self.sample.angular_iimfp(self.energy + self.energy_loss, self.energy_loss)
-        w = np.nan_to_num(ang, nan=0.0) * np.sin(theta)
-        cdf2 = cumulative_trapezoid(w, theta, initial=0.0)
+        ang = self.sample.angular_iimfp(self.energy + self.energy_loss, self.energy_loss)
+        w = np.nan_to_num(ang, nan=0.0) * np.sin(self.sample._sin_theta_i)
+        cdf2 = cumtrapz_numpy(w, self.sample._sin_theta_i, initial=0.0)
         total = float(cdf2[-1])
         if total > 0 and np.isfinite(total):
             cdf2 = cdf2 / total
-            self.deflection[0] = float(np.interp(self.rng.random(), cdf2, theta))
+            self.deflection[0] = float(np.interp(self.rng.random(), cdf2, self.sample._sin_theta_i))
         else:
             # kinematic fallback
             arg = self.energy_loss / max(self.energy + self.energy_loss, 1e-12)
@@ -411,7 +406,7 @@ class Electron:
         ener = self.sample.dos_cdf()
         # energy_loss changes per event, so CDF changes; but we avoid rebuilding ener each time
         dist = np.sqrt(np.maximum(ener * (ener + self.energy_loss), 0.0))
-        cdf = cumulative_trapezoid(dist, ener, initial=0.0)
+        cdf = cumtrapz_numpy(dist, ener, initial=0.0)
         total = float(cdf[-1])
         if total > 0 and np.isfinite(total):
             cdf = cdf / total
@@ -431,9 +426,6 @@ class Electron:
         ratio = Eperp / Ui if Ui > 0 else float("inf")
         self.min_Eperp_over_Ui = min(self.min_Eperp_over_Ui, ratio)
         self.max_Eperp_over_Ui = max(self.max_Eperp_over_Ui, ratio)
-
-        if self.n_escape_calls <= 10:
-            print("Es", self.energy, "uz", self.uvw[2], "Eperp/Ui", Eperp/Ui)
     
         if self.energy <= Ui or Eperp <= Ui:
             self.n_escape_below_barrier += 1   # <-- NEW
