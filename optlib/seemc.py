@@ -268,24 +268,24 @@ class Sample:
     
         sqrtq = np.sqrt(q2)
     
-        # --- diagnostics (run once) ---
-        if not getattr(self, "_printed_elf_ranges", False):
-            omega_h_grid = np.asarray(self.material_data["omega"], float) / h2ev
-            q_a0_grid    = np.asarray(self.material_data["q"], float) * a0
-            print("[ELF grid] omega_h:", omega_h_grid[0], "to", omega_h_grid[-1],
-                  "| q_a0:", q_a0_grid[0], "to", q_a0_grid[-1])
-            self._printed_elf_ranges = True
+        # # --- diagnostics (run once) ---
+        # if not getattr(self, "_printed_elf_ranges", False):
+        #     omega_h_grid = np.asarray(self.material_data["omega"], float) / h2ev
+        #     q_a0_grid    = np.asarray(self.material_data["q"], float) * a0
+        #     print("[ELF grid] omega_h:", omega_h_grid[0], "to", omega_h_grid[-1],
+        #           "| q_a0:", q_a0_grid[0], "to", q_a0_grid[-1])
+        #     self._printed_elf_ranges = True
     
-        # --- diagnostics (occasionally) ---
-        if not getattr(self, "_printed_eval_example", False):
-            omega_h_grid = np.asarray(self.material_data["omega"], float) / h2ev
-            q_a0_grid    = np.asarray(self.material_data["q"], float) * a0
-            print("[ELF eval] dE_h:", dE_h,
-                  "| sqrtq min/max:", float(sqrtq.min()), float(sqrtq.max()))
-            print("[ELF eval] in omega range?", (omega_h_grid[0] <= dE_h <= omega_h_grid[-1]),
-                  "| q coverage frac:",
-                  float(np.mean((sqrtq >= q_a0_grid[0]) & (sqrtq <= q_a0_grid[-1]))))
-            self._printed_eval_example = True
+        # # --- diagnostics (occasionally) ---
+        # if not getattr(self, "_printed_eval_example", False):
+        #     omega_h_grid = np.asarray(self.material_data["omega"], float) / h2ev
+        #     q_a0_grid    = np.asarray(self.material_data["q"], float) * a0
+        #     print("[ELF eval] dE_h:", dE_h,
+        #           "| sqrtq min/max:", float(sqrtq.min()), float(sqrtq.max()))
+        #     print("[ELF eval] in omega range?", (omega_h_grid[0] <= dE_h <= omega_h_grid[-1]),
+        #           "| q coverage frac:",
+        #           float(np.mean((sqrtq >= q_a0_grid[0]) & (sqrtq <= q_a0_grid[-1]))))
+        #     self._printed_eval_example = True
     
         f_rbs = self.elf_spline()
         elf_vals = np.asarray(f_rbs(dE_h, sqrtq, grid=False)).reshape(-1)
