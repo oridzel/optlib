@@ -503,13 +503,11 @@ class Electron:
         if self.scattering_type == 0:
             # elastic: use elastic-clamped energy bin
             # ind = self.sample.energy_index(max(self.energy, self.sample.elastic_min_energy))
-            E_vac = self.energy - self.Ui
-            if E_vac <= 0:
-                return False  # or kill; shouldn't elastically scatter below barrier
-                
+            Ui = self.sample.material_data["e_fermi"] + self.sample.material_data["work_function"]
+            E_vac = self.energy - Ui
             ind = self.sample.energy_index(max(E_vac, self.sample.elastic_min_energy))
-
             theta_grid, cdf = self.sample.get_elastic_theta_cdf(ind)
+            
             u = self.rng.random()
             self.deflection[0] = float(np.interp(u, cdf, theta_grid))
             self.uvw = self.change_direction(self.uvw, self.deflection)
@@ -537,24 +535,19 @@ class Electron:
         # DOS sampling (your model, but cached energy grid)
         self.feg_dos()
 
-        # inelastic angular distribution: still computed per-event
-        # (we can cache later by binning dE if you want maximum speed)
-        ang = self.sample.angular_iimfp(self.energy + self.energy_loss, self.energy_loss)
-
-        # weight for solid-angle: ang(theta) * sin(theta)
-        w = np.nan_to_num(ang, nan=0.0) * self.sample._sin_theta_i
+        ang = self.sample.angular_iimfp(self.energy + self.energy_loss, self.energy_loss)  # shape (Ntheta,)
+        w = np.nan_to_num(ang, nan=0.0, posinf=0.0, neginf=0.0) * self.sample._sin_theta_i
         
         cdf2 = cumtrapz_numpy(w, self.sample._theta_i)
-        total = float(cdf2[-1])
-        
-        if total > 0 and np.isfinite(total):
-            cdf2 /= total
+        tot = float(cdf2[-1])
+        if tot > 0.0 and np.isfinite(tot):
+            cdf2 /= tot
             self.deflection[0] = float(np.interp(self.rng.random(), cdf2, self.sample._theta_i))
         else:
             arg = self.energy_loss / max(self.energy + self.energy_loss, 1e-12)
             arg = min(1.0, max(0.0, arg))
             self.deflection[0] = math.asin(math.sqrt(arg))
-
+            
         self.uvw = self.change_direction(self.uvw, self.deflection)
         return True  # inelastic occurred -> may spawn SE
 
