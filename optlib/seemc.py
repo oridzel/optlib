@@ -77,25 +77,14 @@ def _run_one_trajectory_worker(args):
 
     traj_tracks = []
 
-    # n_scatter = 0
-    # max_scatter = 100000
-
     i = 0
     while i < len(electrons):
         e = electrons[i]
 
         while e.inside and (not e.dead):
-            # if n_scatter >= max_scatter:
-            #     e.dead = True
-            #     break
 
             e.travel()
             if e.dead:
-                break
-
-            # if sample.is_metal and e.energy <= e.e_fermi:
-            if sample.is_metal and e.energy <= e.e_fermi+e.Ui:
-                e.dead = True
                 break
 
             if e.escape():
@@ -112,13 +101,9 @@ def _run_one_trajectory_worker(args):
 
             made_inelastic = e.scatter()
 
-            # thermalization in metals
-            # if sample.is_metal and e.energy <= e.e_fermi:
-            if sample.is_metal and e.energy <= e.e_fermi+e.Ui:
+            if sample.is_metal and e.energy <= e.Ui:
                 e.dead = True
                 break
-
-            # n_scatter += 1
 
             if made_inelastic:
                 se_energy = e.energy_loss + e.energy_se
@@ -269,25 +254,6 @@ class Sample:
         q2 = np.maximum(q2, 1e-12)
     
         sqrtq = np.sqrt(q2)
-    
-        # # --- diagnostics (run once) ---
-        # if not getattr(self, "_printed_elf_ranges", False):
-        #     omega_h_grid = np.asarray(self.material_data["omega"], float) / h2ev
-        #     q_a0_grid    = np.asarray(self.material_data["q"], float) * a0
-        #     print("[ELF grid] omega_h:", omega_h_grid[0], "to", omega_h_grid[-1],
-        #           "| q_a0:", q_a0_grid[0], "to", q_a0_grid[-1])
-        #     self._printed_elf_ranges = True
-    
-        # # --- diagnostics (occasionally) ---
-        # if not getattr(self, "_printed_eval_example", False):
-        #     omega_h_grid = np.asarray(self.material_data["omega"], float) / h2ev
-        #     q_a0_grid    = np.asarray(self.material_data["q"], float) * a0
-        #     print("[ELF eval] dE_h:", dE_h,
-        #           "| sqrtq min/max:", float(sqrtq.min()), float(sqrtq.max()))
-        #     print("[ELF eval] in omega range?", (omega_h_grid[0] <= dE_h <= omega_h_grid[-1]),
-        #           "| q coverage frac:",
-        #           float(np.mean((sqrtq >= q_a0_grid[0]) & (sqrtq <= q_a0_grid[-1]))))
-        #     self._printed_eval_example = True
     
         f_rbs = self.elf_spline()
         elf_vals = np.asarray(f_rbs(dE_h, sqrtq, grid=False)).reshape(-1)
@@ -453,18 +419,13 @@ class Electron:
         return self.iemfp + self.iimfp  # (phonons omitted here; add back later if needed)
 
     def is_dead(self):
-        # basic
         if (not np.isfinite(self.energy)) or self.energy <= 0.0:
             self.dead = True
             return
     
-        # METAL THERMALIZATION RULE:
-        # Once an electron's solid energy drops to EF or below, it merges into the Fermi sea.
-        # if self.sample.is_metal and self.inside and self.energy <= self.e_fermi:
-        if self.sample.is_metal and self.inside and self.energy <= self.Ui:
+        if self.inside and self.energy < self.Ui:
             self.dead = True
             return
-
 
     # --- transport ---
     def travel(self):
