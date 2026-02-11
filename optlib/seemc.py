@@ -462,8 +462,7 @@ class Electron:
         if self.scattering_type == 0:
             # elastic: use elastic-clamped energy bin
             # ind = self.sample.energy_index(max(self.energy, self.sample.elastic_min_energy))
-            Ui = self.sample.material_data["e_fermi"] + self.sample.material_data["work_function"]
-            E_vac = self.energy - Ui
+            E_vac = self.energy - self.sample.Ui
             ind = self.sample.energy_index(max(E_vac, self.sample.elastic_min_energy))
             theta_grid, cdf = self.sample.get_elastic_theta_cdf(ind)
             
@@ -508,7 +507,9 @@ class Electron:
             self.deflection[0] = math.asin(math.sqrt(arg))
             
         self.uvw = self.change_direction(self.uvw, self.deflection)
-        return True  # inelastic occurred -> may spawn SE
+        self.is_dead()
+        if self.dead:
+            return (self.scattering_type == 1)
 
     def feg_dos(self):
         # Your metal model uses e_fermi as ref
@@ -614,19 +615,25 @@ class SEEMC:
     def run_one_trajectory(self, E0, traj_id):
         seed = (os.getpid() * 1_000_003 + traj_id) & 0xFFFFFFFF
         rng = np.random.default_rng(seed)
+
+        traj_tracks = []
         
         tey = 0
         sey = 0
         bse = 0
     
-        electrons = []
-        Ui = self.sample.material_data['e_fermi'] + self.sample.material_data['work_function']
-        E_s0 = E0 + Ui
-    
+        electrons = []    
         electrons.append(Electron(
-            self.sample, E_s0, self.cb_ref, self.track_trajectories,
-            xyz=[0, 0, 0], uvw=[math.sin(self.incident_angle), 0, math.cos(self.incident_angle)],
-            gen=0, se=False, ind=-1, rng=rng
+            self.sample,
+            E0 + self.sample.Ui,   # solid energy (VB-bottom reference)
+            self.cb_ref,
+            self.track_trajectories,
+            xyz=[0, 0, 0],
+            uvw=[math.sin(self.incident_angle), 0, math.cos(self.incident_angle)],
+            gen=0,
+            se=False,
+            ind=-1,
+            rng=rng
         ))
 
         i = 0
