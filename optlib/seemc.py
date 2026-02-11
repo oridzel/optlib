@@ -101,10 +101,6 @@ def _run_one_trajectory_worker(args):
 
             made_inelastic = e.scatter()
 
-            if sample.is_metal and e.energy <= e.Ui:
-                e.dead = True
-                break
-
             if made_inelastic:
                 se_energy = e.energy_loss + e.energy_se
 
