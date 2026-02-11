@@ -77,17 +77,17 @@ def _run_one_trajectory_worker(args):
 
     traj_tracks = []
 
-    # n_scatter = 0
-    # max_scatter = 50_000
+    n_scatter = 0
+    max_scatter = 100000
 
     i = 0
     while i < len(electrons):
         e = electrons[i]
 
         while e.inside and (not e.dead):
-            # if n_scatter >= max_scatter:
-            #     e.dead = True
-            #     break
+            if n_scatter >= max_scatter:
+                e.dead = True
+                break
 
             e.travel()
             if e.dead:
@@ -116,7 +116,7 @@ def _run_one_trajectory_worker(args):
                 e.dead = True
                 break
 
-            # n_scatter += 1
+            n_scatter += 1
 
             if made_inelastic:
                 se_energy = e.energy_loss + e.energy_se
