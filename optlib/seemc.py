@@ -63,8 +63,7 @@ def _run_one_trajectory_worker(args):
     bse = 0
 
     electrons = []
-    Ui = sample.material_data["e_fermi"] + sample.material_data["work_function"]
-    E_s0 = float(E0) + Ui
+    E_s0 = float(E0) + sample.Ui
 
     electrons.append(
         Electron(
@@ -735,12 +734,14 @@ class SEEMC:
                 "n_par2_clamp":0, "max_inv_err":0.0, "sum_inv_err":0.0, "n_inv":0}
     
         electrons = []    
+        E_s0 = float(E0) + self.sample.Ui
+        xyz=[0.0, 0.0, 0.0]
         electrons.append(Electron(
             self.sample,
-            E0 + self.sample.Ui,   # solid energy (VB-bottom reference)
+            E_s0,   # solid energy (VB-bottom reference)
             self.cb_ref,
             self.track_trajectories,
-            xyz=[0, 0, 0],
+            xyz=xyz,
             uvw=[math.sin(self.incident_angle), 0, math.cos(self.incident_angle)],
             gen=0,
             se=False,
