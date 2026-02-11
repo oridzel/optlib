@@ -240,31 +240,20 @@ class Sample:
 
     # ---------- inelastic angular distribution ----------
     def angular_iimfp(self, E, dE):
-        """
-        Return theta grid and angular distribution for a given incident kinetic E and loss dE.
-        This is your existing formula with better numeric guards.
-        """
-
-        # Convert to Hartree units if your existing code expects it.
-        # Keep exactly your previous conversions if needed; I’m leaving these as placeholders:
-        # E_h = E / h2ev ; dE_h = dE / h2ev
-        E_h = E / h2ev
+        E_h  = E / h2ev
         dE_h = dE / h2ev
-
-        # guard
         if dE_h <= 0 or E_h <= dE_h:
             return np.zeros_like(self._theta_i)
-
+    
         q2 = 4*E_h - 2*dE_h - 4*np.sqrt(E_h*(E_h-dE_h))*np.cos(self._theta_i)
         q2 = np.maximum(q2, 1e-12)
-
+    
         f_rbs = self.elf_spline()
-        x, y = np.meshgrid(np.array([dE_h]), np.sqrt(q2), indexing="ij")
-        elf_vals = np.squeeze(f_rbs(x, y, grid=False))
-
+        sqrtq = np.sqrt(q2)
+        elf_vals = np.asarray(f_rbs(dE_h, sqrtq, grid=False)).reshape(-1)
+    
         ang = (1.0 / (math.pi**2 * q2)) * np.sqrt(max(1.0 - dE_h / E_h, 0.0)) * elf_vals
-        ang = np.nan_to_num(ang, nan=0.0, posinf=0.0, neginf=0.0)
-        return ang
+        return np.nan_to_num(ang, nan=0.0, posinf=0.0, neginf=0.0)
 
     # ---------- DOS sampling cache (for metals) ----------
     def dos_cdf(self):
@@ -506,14 +495,17 @@ class Electron:
         # inelastic angular distribution: still computed per-event
         # (we can cache later by binning dE if you want maximum speed)
         ang = self.sample.angular_iimfp(self.energy + self.energy_loss, self.energy_loss)
-        w = np.nan_to_num(ang, nan=0.0) * np.sin(self.sample._sin_theta_i)
-        cdf2 = cumtrapz_numpy(w, self.sample._sin_theta_i)
+
+        # weight for solid-angle: ang(theta) * sin(theta)
+        w = np.nan_to_num(ang, nan=0.0) * self.sample._sin_theta_i
+        
+        cdf2 = cumtrapz_numpy(w, self.sample._theta_i)
         total = float(cdf2[-1])
+        
         if total > 0 and np.isfinite(total):
-            cdf2 = cdf2 / total
-            self.deflection[0] = float(np.interp(self.rng.random(), cdf2, self.sample._sin_theta_i))
+            cdf2 /= total
+            self.deflection[0] = float(np.interp(self.rng.random(), cdf2, self.sample._theta_i))
         else:
-            # kinematic fallback
             arg = self.energy_loss / max(self.energy + self.energy_loss, 1e-12)
             arg = min(1.0, max(0.0, arg))
             self.deflection[0] = math.asin(math.sqrt(arg))
