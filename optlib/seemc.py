@@ -197,11 +197,21 @@ class Sample:
         E = self._clip_E(E)
         return float(np.interp(E, self.Egrid, self.material_data['imfp']))
 
-    def get_emfp(self, E):
-        # apply elastic clamp before querying elastic tables
-        E = max(E, self.elastic_min_energy)
-        E = self._clip_E(E)
-        return float(np.interp(E, self.Egrid, self.material_data['emfp']))
+    # def get_emfp(self, E):
+    #     # apply elastic clamp before querying elastic tables
+    #     E = max(E, self.elastic_min_energy)
+    #     E = self._clip_E(E)
+    #     return float(np.interp(E, self.Egrid, self.material_data['emfp']))
+
+    def get_emfp(self, E_solid):
+        # Convert solid energy (VB bottom ref) -> vacuum kinetic energy
+        E_vac = E_solid - self.Ui
+    
+        # Elastic tables (ELSEPA) are defined vs vacuum kinetic energy
+        E_vac = max(E_vac, self.elastic_min_energy)
+    
+        E_vac = self._clip_E(E_vac)
+        return float(np.interp(E_vac, self.Egrid, self.material_data["emfp"]))
 
     # ---------- fast binning ----------
     def energy_index(self, E):
@@ -488,7 +498,13 @@ class Electron:
 
         if self.scattering_type == 0:
             # elastic: use elastic-clamped energy bin
-            ind = self.sample.energy_index(max(self.energy, self.sample.elastic_min_energy))
+            # ind = self.sample.energy_index(max(self.energy, self.sample.elastic_min_energy))
+            E_vac = self.energy - self.Ui
+                if E_vac <= 0:
+                    return False  # or kill; shouldn't elastically scatter below barrier
+                
+            ind = self.sample.energy_index(max(E_vac, self.sample.elastic_min_energy))
+
             theta_grid, cdf = self.sample.get_elastic_theta_cdf(ind)
             u = self.rng.random()
             self.deflection[0] = float(np.interp(u, cdf, theta_grid))
