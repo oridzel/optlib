@@ -382,13 +382,20 @@ class Electron:
     
         # Optional: store vacuum energy upon emission (None while inside)
         self.energy_vac = None
+        self.diag = {
+            "n_escape_calls": 0,
+            "n_reflect_barrier": 0,
+            "n_reflect_prob": 0,
+            "n_transmit": 0,
+            "n_par2_clamp": 0,
+            "max_par_in": 0.0,
+            "max_par_out": 0.0,
+            "max_invariant_err": 0.0,
+            "sum_invariant_err": 0.0,
+            "samples": []  # optional: keep a few records
+        }
+        self.diag_keep = 200  # cap samples to avoid memory blowup
 
-        self.n_escape_calls = 0
-        self.n_escape_below_barrier = 0
-        self.n_escape_reflected_prob = 0
-        self.n_escape_transmit = 0
-        self.min_Eperp_over_Ui = float("inf")
-        self.max_Eperp_over_Ui = 0.0
 
     # --- rates ---
     @property
@@ -527,21 +534,77 @@ class Electron:
         else:
             self.energy_se = 0.0
 
+    # def escape(self):
+    #     if self.xyz[2] > 0.0:
+    #         return False
+        
+    #     Ui = self.Ui
+    #     Eperp = self.energy * (self.uvw[2] ** 2)
+    
+    #     if self.energy <= Ui or Eperp <= Ui:
+    #         self.uvw[2] *= -1
+    #         self.xyz[2] = 1e-10
+    #         if self.save_coordinates:
+    #             self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
+    #         return False
+    
+    #     root = math.sqrt(1.0 - Ui / Eperp)
+    #     t = 4.0 * root / ((1.0 + root) ** 2)
+    
+    #     if self.rng.random() < t:
+    #         # Transmit into vacuum
+    #         self.inside = False
+        
+    #         Es = self.energy
+    #         Ev = Es - Ui
+    #         if Ev <= 0.0:
+    #             # should not happen because we already checked barrier
+    #             self.dead = True
+    #             return False
+        
+    #         # --- Angular refraction (conserve p_parallel) ---
+    #         ux, uy, uz = self.uvw
+    #         # scale tangential components: u_par_out = u_par_in * sqrt(Es/Ev)
+    #         s = math.sqrt(Es / Ev)
+    #         ux_out = ux * s
+    #         uy_out = uy * s
+        
+    #         par2 = ux_out*ux_out + uy_out*uy_out
+    #         # numerical guard (can happen right at threshold)
+    #         if par2 >= 1.0:
+    #             par2 = 1.0 - 1e-15
+        
+    #         # keep outgoing direction toward vacuum (z<0)
+    #         uz_out = -math.sqrt(1.0 - par2)
+        
+    #         # update direction + energy
+    #         self.uvw = [ux_out, uy_out, uz_out]
+    #         self.energy_vac = Ev
+    #         self.energy = Ev
+        
+    #         # place exactly at surface
+    #         self.xyz[2] = 0.0
+        
+    #         return True
+   
+    #     self.uvw[2] *= -1
+    #     self.xyz[2] = 1e-10
+    #     return False
+
     def escape(self):
         if self.xyz[2] > 0.0:
             return False
     
-        self.n_escape_calls += 1
+        self.diag["n_escape_calls"] += 1
     
         Ui = self.Ui
-        Eperp = self.energy * (self.uvw[2] ** 2)
+        Es = self.energy
+        uz = self.uvw[2]
+        Eperp = Es * (uz ** 2)
     
-        ratio = Eperp / Ui if Ui > 0 else float("inf")
-        self.min_Eperp_over_Ui = min(self.min_Eperp_over_Ui, ratio)
-        self.max_Eperp_over_Ui = max(self.max_Eperp_over_Ui, ratio)
-    
-        if self.energy <= Ui or Eperp <= Ui:
-            self.n_escape_below_barrier += 1   # <-- NEW
+        # Barrier reflection
+        if Es <= Ui or Eperp <= Ui:
+            self.diag["n_reflect_barrier"] += 1
             self.uvw[2] *= -1
             self.xyz[2] = 1e-10
             if self.save_coordinates:
@@ -552,17 +615,63 @@ class Electron:
         t = 4.0 * root / ((1.0 + root) ** 2)
     
         if self.rng.random() < t:
+            # Transmit into vacuum
             self.inside = False
-            Ev = self.energy - Ui
+            self.diag["n_transmit"] += 1
+    
+            Ev = Es - Ui
+            if Ev <= 0.0:
+                self.dead = True
+                return False
+    
+            ux, uy, uz = self.uvw
+            par_in2 = ux*ux + uy*uy
+            self.diag["max_par_in"] = max(self.diag["max_par_in"], math.sqrt(par_in2))
+    
+            # Refraction scaling (p_parallel conservation)
+            s = math.sqrt(Es / Ev)
+            ux_out = ux * s
+            uy_out = uy * s
+            par_out2 = ux_out*ux_out + uy_out*uy_out
+    
+            if par_out2 >= 1.0:
+                self.diag["n_par2_clamp"] += 1
+                par_out2 = 1.0 - 1e-15
+    
+            uz_out = -math.sqrt(1.0 - par_out2)
+    
+            # Invariant check: Es*par_in2 == Ev*par_out2  (should match closely)
+            inv_in = Es * par_in2
+            inv_out = Ev * par_out2
+            err = abs(inv_out - inv_in) / max(inv_in, 1e-12)  # relative
+            self.diag["max_invariant_err"] = max(self.diag["max_invariant_err"], err)
+            self.diag["sum_invariant_err"] += err
+            self.diag["max_par_out"] = max(self.diag["max_par_out"], math.sqrt(par_out2))
+    
+            if len(self.diag["samples"]) < self.diag_keep:
+                self.diag["samples"].append({
+                    "Es": Es, "Ev": Ev, "Ui": Ui,
+                    "t": t,
+                    "par_in2": par_in2, "par_out2": par_out2,
+                    "inv_in": inv_in, "inv_out": inv_out,
+                    "rel_err": err,
+                    "uvw_in": (ux, uy, uz),
+                    "uvw_out": (ux_out, uy_out, uz_out),
+                })
+    
+            # update direction + energy
+            self.uvw = [ux_out, uy_out, uz_out]
             self.energy_vac = Ev
             self.energy = Ev
-            self.n_escape_transmit += 1        # <-- NEW
+            self.xyz[2] = 0.0
             return True
     
-        self.n_escape_reflected_prob += 1      # <-- NEW
+        # Probabilistic reflection
+        self.diag["n_reflect_prob"] += 1
         self.uvw[2] *= -1
         self.xyz[2] = 1e-10
         return False
+
 
     def change_direction(self, uvw, deflection):
         # normalized rotation (your earlier function but stable)
@@ -621,6 +730,9 @@ class SEEMC:
         tey = 0
         sey = 0
         bse = 0
+
+        diag_acc = {"n_transmit":0, "n_reflect_barrier":0, "n_reflect_prob":0,
+                "n_par2_clamp":0, "max_inv_err":0.0, "sum_inv_err":0.0, "n_inv":0}
     
         electrons = []    
         electrons.append(Electron(
@@ -680,6 +792,15 @@ class SEEMC:
     
             electrons[i] = None
             i += 1
+
+            d = e.diag
+            diag_acc["n_transmit"] += d["n_transmit"]
+            diag_acc["n_reflect_barrier"] += d["n_reflect_barrier"]
+            diag_acc["n_reflect_prob"] += d["n_reflect_prob"]
+            diag_acc["n_par2_clamp"] += d["n_par2_clamp"]
+            diag_acc["max_inv_err"] = max(diag_acc["max_inv_err"], d["max_invariant_err"])
+            diag_acc["sum_inv_err"] += d["sum_invariant_err"]
+            diag_acc["n_inv"] += d["n_transmit"]  # invariant computed per transmit
 
         return tey, sey, bse, (traj_tracks if self.track_trajectories else None)
 
