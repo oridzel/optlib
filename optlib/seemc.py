@@ -802,7 +802,7 @@ class SEEMC:
             diag_acc["sum_inv_err"] += d["sum_invariant_err"]
             diag_acc["n_inv"] += d["n_transmit"]  # invariant computed per transmit
 
-        return tey, sey, bse, (traj_tracks if self.track_trajectories else None)
+        return tey, sey, bse, diag_acc, (traj_tracks if self.track_trajectories else None)
 
 
     def run_simulation(self, use_parallel=False):
