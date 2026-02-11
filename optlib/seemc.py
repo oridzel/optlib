@@ -170,6 +170,9 @@ class Sample:
         self._precompute_elastic_cdfs()
         self._theta_i = np.linspace(0.0, math.pi/2.0, 180)
         self._sin_theta_i = np.sin(self._theta_i)
+        self.e_fermi = float(self.material_data.get("e_fermi", 0.0))
+        self.work_function = float(self.material_data.get("work_function", 0.0))
+        self.Ui = self.e_fermi + self.work_function
 
 
     # ---------- safe interpolation helpers ----------
@@ -187,10 +190,6 @@ class Sample:
     #     return float(np.interp(E, self.Egrid, self.material_data['emfp']))
 
     def get_emfp(self, E_solid):
-        self.e_fermi = float(self.material_data.get("e_fermi", 0.0))
-        self.work_function = float(self.material_data.get("work_function", 0.0))
-        self.Ui = self.e_fermi + self.work_function
-
         # Convert solid energy (VB bottom ref) -> vacuum kinetic energy
         E_vac = E_solid - self.Ui
     
@@ -269,7 +268,7 @@ class Sample:
         """
         if self._dos_cdf_cache is None:
             if self.is_metal:
-                e_ref = float(self.material_data['e_fermi'])
+                e_ref = self.e_fermi
             else:
                 e_ref = float(self.material_data.get('e_vb', 0.0))
             e_ref = max(e_ref, 1e-6)
