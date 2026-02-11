@@ -384,7 +384,7 @@ class Electron:
         # (we can cache later by binning dE if you want maximum speed)
         ang = self.sample.angular_iimfp(self.energy + self.energy_loss, self.energy_loss)
         w = np.nan_to_num(ang, nan=0.0) * np.sin(self.sample._sin_theta_i)
-        cdf2 = cumtrapz_numpy(w, self.sample._sin_theta_i, initial=0.0)
+        cdf2 = cumtrapz_numpy(w, self.sample._sin_theta_i)
         total = float(cdf2[-1])
         if total > 0 and np.isfinite(total):
             cdf2 = cdf2 / total
@@ -406,7 +406,7 @@ class Electron:
         ener = self.sample.dos_cdf()
         # energy_loss changes per event, so CDF changes; but we avoid rebuilding ener each time
         dist = np.sqrt(np.maximum(ener * (ener + self.energy_loss), 0.0))
-        cdf = cumtrapz_numpy(dist, ener, initial=0.0)
+        cdf = cumtrapz_numpy(dist, ener)
         total = float(cdf[-1])
         if total > 0 and np.isfinite(total):
             cdf = cdf / total
