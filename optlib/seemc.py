@@ -244,16 +244,41 @@ class Sample:
         dE_h = dE / h2ev
         if dE_h <= 0 or E_h <= dE_h:
             return np.zeros_like(self._theta_i)
+
+        mu = 1.0 - dE_h / E_h
+        if mu <= 0.0:
+            return np.zeros_like(self._theta_i)
     
         q2 = 4*E_h - 2*dE_h - 4*np.sqrt(E_h*(E_h-dE_h))*np.cos(self._theta_i)
         q2 = np.maximum(q2, 1e-12)
     
-        f_rbs = self.elf_spline()
         sqrtq = np.sqrt(q2)
+    
+        # --- diagnostics (run once) ---
+        if not getattr(self, "_printed_elf_ranges", False):
+            omega_h_grid = np.asarray(self.material_data["omega"], float) / h2ev
+            q_a0_grid    = np.asarray(self.material_data["q"], float) * a0
+            print("[ELF grid] omega_h:", omega_h_grid[0], "to", omega_h_grid[-1],
+                  "| q_a0:", q_a0_grid[0], "to", q_a0_grid[-1])
+            self._printed_elf_ranges = True
+    
+        # --- diagnostics (occasionally) ---
+        if not getattr(self, "_printed_eval_example", False):
+            omega_h_grid = np.asarray(self.material_data["omega"], float) / h2ev
+            q_a0_grid    = np.asarray(self.material_data["q"], float) * a0
+            print("[ELF eval] dE_h:", dE_h,
+                  "| sqrtq min/max:", float(sqrtq.min()), float(sqrtq.max()))
+            print("[ELF eval] in omega range?", (omega_h_grid[0] <= dE_h <= omega_h_grid[-1]),
+                  "| q coverage frac:",
+                  float(np.mean((sqrtq >= q_a0_grid[0]) & (sqrtq <= q_a0_grid[-1]))))
+            self._printed_eval_example = True
+    
+        f_rbs = self.elf_spline()
         elf_vals = np.asarray(f_rbs(dE_h, sqrtq, grid=False)).reshape(-1)
     
         ang = (1.0 / (math.pi**2 * q2)) * np.sqrt(max(1.0 - dE_h / E_h, 0.0)) * elf_vals
         return np.nan_to_num(ang, nan=0.0, posinf=0.0, neginf=0.0)
+
 
     # ---------- DOS sampling cache (for metals) ----------
     def dos_cdf(self):
