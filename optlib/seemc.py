@@ -654,9 +654,6 @@ class SEEMC:
     
         electrons = []    
         E_s0 = float(E0) + self.sample.Ui
-        print('run_one_trajectory')
-        print(self.sample.Ui)
-        print(E_s0)
         
         xyz=[0.0, 0.0, 0.0]
         electrons.append(Electron(
@@ -700,8 +697,7 @@ class SEEMC:
                     se_energy = e.energy_loss + e.energy_se
     
                     # spawn criterion (metal): only above EF for this model
-                    print(e.Ui)
-                    if self.sample.is_metal and se_energy <= e.Ui:
+                    if self.sample.is_metal and se_energy <= e.e_fermi:
                         pass
                     else:
                         se_defl = [math.pi - e.deflection[0], (e.deflection[1] + math.pi) % (2*math.pi)]
