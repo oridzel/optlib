@@ -451,9 +451,6 @@ class Electron:
             # elastic: use elastic-clamped energy bin
             # ind = self.sample.energy_index(max(self.energy, self.sample.elastic_min_energy))
             E_vac = self.energy - self.Ui
-            if E_vac <= 0:
-                self.dead = True
-                return False
             ind = self.sample.energy_index(max(E_vac, self.sample.elastic_min_energy))
             theta_grid, cdf = self.sample.get_elastic_theta_cdf(ind)
             
@@ -501,8 +498,7 @@ class Electron:
             
         self.uvw = self.change_direction(self.uvw, self.deflection)
         self.is_dead()
-        if self.dead:
-            return (self.scattering_type == 1)
+        return True
 
     def feg_dos(self):
         e_ref = self.e_fermi if self.sample.is_metal else float(self.sample.material_data.get('e_vb', 0.0))
@@ -697,7 +693,7 @@ class SEEMC:
                     se_energy = e.energy_loss + e.energy_se
     
                     # spawn criterion (metal): only above EF for this model
-                    if self.sample.is_metal and se_energy <= e.e_fermi:
+                    if self.sample.is_metal and se_energy <= e.Ui:
                         pass
                     else:
                         se_defl = [math.pi - e.deflection[0], (e.deflection[1] + math.pi) % (2*math.pi)]
