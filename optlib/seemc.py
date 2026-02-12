@@ -62,10 +62,6 @@ def _run_one_trajectory_worker(args):
     sey = 0
     bse = 0
 
-    n_inelastic = 0
-    n_spawned = 0
-    n_electrons_max = 1
-
     electrons = []
     E_s0 = float(E0) + sample.Ui
 
@@ -105,7 +101,6 @@ def _run_one_trajectory_worker(args):
             made_inelastic = e.scatter()
 
             if made_inelastic:
-                n_inelastic += 1
                 se_energy = e.energy_loss + e.energy_se
 
                 # spawn criterion (metal): only above EF for this model
@@ -122,9 +117,6 @@ def _run_one_trajectory_worker(args):
                             xyz=se_xyz, uvw=se_uvw, gen=e.generation + 1, se=True, ind=i, rng=rng
                         )
                     )
-                    n_spawned += 1
-                    if len(electrons) > n_electrons_max:
-                        n_electrons_max = len(electrons)
 
         if _G.track:
             traj_tracks.append(e.coordinates)
@@ -132,7 +124,7 @@ def _run_one_trajectory_worker(args):
         electrons[i] = None
         i += 1
 
-    return tey, sey, bse, (traj_tracks if _G.track else None), n_inelastic, n_spawned, n_electrons_max
+    return tey, sey, bse, (traj_tracks if _G.track else None)
     
 
 class Sample:
@@ -389,20 +381,6 @@ class Electron:
     
         # Optional: store vacuum energy upon emission (None while inside)
         self.energy_vac = None
-        self.diag = {
-            "n_escape_calls": 0,
-            "n_reflect_barrier": 0,
-            "n_reflect_prob": 0,
-            "n_transmit": 0,
-            "n_par2_clamp": 0,
-            "max_par_in": 0.0,
-            "max_par_out": 0.0,
-            "max_invariant_err": 0.0,
-            "sum_invariant_err": 0.0,
-            "samples": []  # optional: keep a few records
-        }
-        self.diag_keep = 200  # cap samples to avoid memory blowup
-
 
     # --- rates ---
     @property
@@ -414,7 +392,7 @@ class Electron:
 
     @property
     def iimfp(self):
-        # Metal model: inelastic only if E > E_F (your DB construction)
+        # Metal model: inelastic only if E > E_F
         if self.sample.is_metal and self.energy <= self.e_fermi:
             return 0.0
 
@@ -432,7 +410,7 @@ class Electron:
             self.dead = True
             return
     
-        if self.inside and self.energy < self.Ui:
+        if self.inside and self.energy <= self.Ui:
             self.dead = True
             return
 
@@ -444,10 +422,6 @@ class Electron:
             return
 
         s = -math.log(self.rng.random()) / rate
-
-        if not hasattr(self, "_printed_step"):
-            print("Example step s:", s, "IMFP:", 1/self.iimfp if self.iimfp>0 else None, "EMFP:", 1/self.iemfp if self.iemfp>0 else None)
-            self._printed_step = True
 
         # stop exactly at surface if would cross (vacuum is z<0)
         if self.uvw[2] < 0.0 and abs(self.uvw[2]) > 1e-15:
@@ -628,7 +602,6 @@ class Electron:
         if self.rng.random() < t:
             # Transmit into vacuum
             self.inside = False
-            self.diag["n_transmit"] += 1
     
             Ev = Es - Ui
             if Ev <= 0.0:
@@ -637,7 +610,6 @@ class Electron:
     
             ux, uy, uz = self.uvw
             par_in2 = ux*ux + uy*uy
-            self.diag["max_par_in"] = max(self.diag["max_par_in"], math.sqrt(par_in2))
     
             # Refraction scaling (p_parallel conservation)
             s = math.sqrt(Es / Ev)
@@ -646,29 +618,9 @@ class Electron:
             par_out2 = ux_out*ux_out + uy_out*uy_out
     
             if par_out2 >= 1.0:
-                self.diag["n_par2_clamp"] += 1
                 par_out2 = 1.0 - 1e-15
     
             uz_out = -math.sqrt(1.0 - par_out2)
-    
-            # Invariant check: Es*par_in2 == Ev*par_out2  (should match closely)
-            inv_in = Es * par_in2
-            inv_out = Ev * par_out2
-            err = abs(inv_out - inv_in) / max(inv_in, 1e-12)  # relative
-            self.diag["max_invariant_err"] = max(self.diag["max_invariant_err"], err)
-            self.diag["sum_invariant_err"] += err
-            self.diag["max_par_out"] = max(self.diag["max_par_out"], math.sqrt(par_out2))
-    
-            if len(self.diag["samples"]) < self.diag_keep:
-                self.diag["samples"].append({
-                    "Es": Es, "Ev": Ev, "Ui": Ui,
-                    "t": t,
-                    "par_in2": par_in2, "par_out2": par_out2,
-                    "inv_in": inv_in, "inv_out": inv_out,
-                    "rel_err": err,
-                    "uvw_in": (ux, uy, uz),
-                    "uvw_out": (ux_out, uy_out, uz_out),
-                })
     
             # update direction + energy
             self.uvw = [ux_out, uy_out, uz_out]
@@ -677,8 +629,6 @@ class Electron:
             self.xyz[2] = 0.0
             return True
     
-        # Probabilistic reflection
-        self.diag["n_reflect_prob"] += 1
         # Diffuse reflection into the solid (uz > 0)
         u = self.rng.random()
         v = self.rng.random()
@@ -750,10 +700,7 @@ class SEEMC:
         
         tey = 0
         sey = 0
-        bse = 0
-
-        diag_acc = {"n_transmit":0, "n_reflect_barrier":0, "n_reflect_prob":0,
-                "n_par2_clamp":0, "max_inv_err":0.0, "sum_inv_err":0.0, "n_inv":0}
+        bse = 0      
     
         electrons = []    
         E_s0 = float(E0) + self.sample.Ui
@@ -816,16 +763,7 @@ class SEEMC:
             electrons[i] = None
             i += 1
 
-            d = e.diag
-            diag_acc["n_transmit"] += d["n_transmit"]
-            diag_acc["n_reflect_barrier"] += d["n_reflect_barrier"]
-            diag_acc["n_reflect_prob"] += d["n_reflect_prob"]
-            diag_acc["n_par2_clamp"] += d["n_par2_clamp"]
-            diag_acc["max_inv_err"] = max(diag_acc["max_inv_err"], d["max_invariant_err"])
-            diag_acc["sum_inv_err"] += d["sum_invariant_err"]
-            diag_acc["n_inv"] += d["n_transmit"]  # invariant computed per transmit
-
-        return tey, sey, bse, diag_acc, (traj_tracks if self.track_trajectories else None)
+        return tey, sey, bse, (traj_tracks if self.track_trajectories else None)
 
 
     def run_simulation(self, use_parallel=False):
@@ -839,30 +777,13 @@ class SEEMC:
         if not use_parallel:
             for k, E0 in enumerate(self.energy_array):
                 t_tey = t_sey = t_bse = 0
-                diag_E = {
-                    "n_transmit": 0,
-                    "n_reflect_barrier": 0,
-                    "n_reflect_prob": 0,
-                    "n_par2_clamp": 0,
-                    "max_inv_err": 0.0,
-                    "sum_inv_err": 0.0,
-                    "n_inv": 0
-                }
                 tracks_E = [] if self.track_trajectories else None
     
                 for traj in tqdm(range(self.n_trajectories), desc=f"E={E0:.1f} eV"):
-                    tey, sey, bse, diag, trk = self.run_one_trajectory(E0, traj)
+                    tey, sey, bse, trk = self.run_one_trajectory(E0, traj)
                     t_tey += tey
                     t_sey += sey
                     t_bse += bse
-                    
-                    diag_E["n_transmit"] += diag["n_transmit"]
-                    diag_E["n_reflect_barrier"] += diag["n_reflect_barrier"]
-                    diag_E["n_reflect_prob"] += diag["n_reflect_prob"]
-                    diag_E["n_par2_clamp"] += diag["n_par2_clamp"]
-                    diag_E["max_inv_err"] = max(diag_E["max_inv_err"], diag["max_inv_err"])
-                    diag_E["sum_inv_err"] += diag["sum_inv_err"]
-                    diag_E["n_inv"] += diag["n_inv"]
 
                     if self.track_trajectories:
                         tracks_E.append(trk)
@@ -872,19 +793,6 @@ class SEEMC:
                 self.bse[k] = t_bse / self.n_trajectories
                 if self.track_trajectories:
                     self.tracks.append(tracks_E)
-                if diag_E["n_inv"] > 0:
-                    avg_err = diag_E["sum_inv_err"] / diag_E["n_inv"]
-                else:
-                    avg_err = 0.0
-                
-                print(f"\nDiagnostics for E={E0:.1f} eV")
-                print(f"  Transmitted: {diag_E['n_transmit']}")
-                print(f"  Barrier reflections: {diag_E['n_reflect_barrier']}")
-                print(f"  Prob reflections: {diag_E['n_reflect_prob']}")
-                print(f"  par2 clamp count: {diag_E['n_par2_clamp']}")
-                print(f"  Max invariant error: {diag_E['max_inv_err']:.3e}")
-                print(f"  Avg invariant error: {avg_err:.3e}")
-
     
             print(f"Done in {time.time() - t0:.1f} s")
             return
@@ -918,7 +826,7 @@ class SEEMC:
                 total_spawned = 0
                 max_cascade = 0
                 
-                for tey, sey, bse, trk, ninel, nspawn, nelecmax in tqdm(
+                for tey, sey, bse, trk in tqdm(
                     pool.imap_unordered(_run_one_trajectory_worker, tasks, chunksize=chunksize),
                     total=self.n_trajectories,
                     desc=f"E={E0:.1f} eV",
@@ -926,10 +834,6 @@ class SEEMC:
                     t_tey += tey
                     t_sey += sey
                     t_bse += bse
-                    total_inelastic += ninel
-                    total_spawned += nspawn
-                    if nelecmax > max_cascade:
-                        max_cascade = nelecmax
                     if self.track_trajectories:
                         tracks_E.append(trk)
     
@@ -939,11 +843,6 @@ class SEEMC:
                 
                 if self.track_trajectories:
                     self.tracks.append(tracks_E)
-
-                print(f"\nPhysics diagnostics for E={E0:.1f} eV")
-                print(f"  Avg inelastic events per primary: {total_inelastic / self.n_trajectories:.2f}")
-                print(f"  Avg secondaries spawned per primary: {total_spawned / self.n_trajectories:.2f}")
-                print(f"  Max cascade size observed: {max_cascade}")
     
         print(f"Done in {time.time() - t0:.1f} s")
 
