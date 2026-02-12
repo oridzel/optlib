@@ -103,7 +103,6 @@ def _run_one_trajectory_worker(args):
             if made_inelastic:
                 se_energy = e.energy_loss + e.energy_se
 
-                # spawn criterion (metal): only above EF for this model
                 if sample.is_metal and se_energy <= e.Ui:
                     pass
                 else:
@@ -190,11 +189,8 @@ class Sample:
 
     def get_emfp(self, E_solid):
         # Convert solid energy (VB bottom ref) -> vacuum kinetic energy
-        E_vac = E_solid - self.Ui
-    
-        # Elastic tables (ELSEPA) are defined vs vacuum kinetic energy
-        E_vac = max(E_vac, self.elastic_min_energy)
-    
+        E_vac = E_solid - self.Ui   
+        E_vac = max(E_vac, self.elastic_min_energy)    
         E_vac = self._clip_E(E_vac)
         return float(np.interp(E_vac, self.Egrid, self.material_data["emfp"]))
 
@@ -454,7 +450,10 @@ class Electron:
         if self.scattering_type == 0:
             # elastic: use elastic-clamped energy bin
             # ind = self.sample.energy_index(max(self.energy, self.sample.elastic_min_energy))
-            E_vac = self.energy - self.sample.Ui
+            E_vac = self.energy - self.Ui
+            if E_vac <= 0:
+                self.dead = True
+                return False
             ind = self.sample.energy_index(max(E_vac, self.sample.elastic_min_energy))
             theta_grid, cdf = self.sample.get_elastic_theta_cdf(ind)
             
@@ -482,12 +481,13 @@ class Electron:
         if self.dead:
             return True  # inelastic happened but primary died
 
-        # DOS sampling (your model, but cached energy grid)
+        # DOS sampling
         # self.energy_se = self.sample.e_fermi
         self.feg_dos()
 
-        ang = self.sample.angular_iimfp(self.energy + self.energy_loss, self.energy_loss)  # shape (Ntheta,)
-        w = np.nan_to_num(ang, nan=0.0, posinf=0.0, neginf=0.0) * self.sample._sin_theta_i
+        ang = self.sample.angular_iimfp(self.energy + self.energy_loss, self.energy_loss)
+        # w = np.nan_to_num(ang, nan=0.0, posinf=0.0, neginf=0.0) * self.sample._sin_theta_i
+        w = np.nan_to_num(ang, nan=0.0) * self.sample._sin_theta_i
         
         cdf2 = cumtrapz_numpy(w, self.sample._theta_i)
         tot = float(cdf2[-1])
