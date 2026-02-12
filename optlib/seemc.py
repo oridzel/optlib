@@ -667,8 +667,18 @@ class Electron:
     
         # Probabilistic reflection
         self.diag["n_reflect_prob"] += 1
-        self.uvw[2] *= -1
-        self.xyz[2] = 1e-10
+        # Diffuse reflection into the solid (uz > 0)
+        u = self.rng.random()
+        v = self.rng.random()
+        cos_t = math.sqrt(u)                 # Lambertian
+        sin_t = math.sqrt(1.0 - cos_t*cos_t)
+        phi = 2.0 * math.pi * v
+        self.uvw[0] = sin_t * math.cos(phi)
+        self.uvw[1] = sin_t * math.sin(phi)
+        self.uvw[2] = cos_t        
+        self.xyz[2] = 1e-3 * min(self.sample.get_imfp(self.energy), self.sample.get_emfp(self.energy))
+        if self.save_coordinates:
+            self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
         return False
 
 
