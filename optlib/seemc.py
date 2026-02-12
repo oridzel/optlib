@@ -64,9 +64,6 @@ def _run_one_trajectory_worker(args):
 
     electrons = []
     E_s0 = float(E0) + sample.Ui
-    print('_run_one_trajectory_worker')
-    print(sample.Ui)
-    print(E_s0)
 
     electrons.append(
         Electron(
@@ -105,8 +102,6 @@ def _run_one_trajectory_worker(args):
 
             if made_inelastic:
                 se_energy = e.energy_loss + e.energy_se
-                print('main loop')
-                print(e.Ui)
 
                 if sample.is_metal and se_energy <= e.Ui:
                     pass
@@ -659,6 +654,10 @@ class SEEMC:
     
         electrons = []    
         E_s0 = float(E0) + self.sample.Ui
+        print('run_one_trajectory')
+        print(self.sample.Ui)
+        print(E_s0)
+        
         xyz=[0.0, 0.0, 0.0]
         electrons.append(Electron(
             self.sample,
@@ -701,6 +700,7 @@ class SEEMC:
                     se_energy = e.energy_loss + e.energy_se
     
                     # spawn criterion (metal): only above EF for this model
+                    print(e.Ui)
                     if self.sample.is_metal and se_energy <= e.Ui:
                         pass
                     else:
