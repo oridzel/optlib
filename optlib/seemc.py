@@ -445,6 +445,10 @@ class Electron:
 
         s = -math.log(self.rng.random()) / rate
 
+        if not hasattr(self, "_printed_step"):
+            print("Example step s:", s, "IMFP:", 1/self.iimfp if self.iimfp>0 else None, "EMFP:", 1/self.iemfp if self.iemfp>0 else None)
+            self._printed_step = True
+
         # stop exactly at surface if would cross (vacuum is z<0)
         if self.uvw[2] < 0.0 and abs(self.uvw[2]) > 1e-15:
             s_to_surface = -self.xyz[2] / self.uvw[2]
