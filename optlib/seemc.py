@@ -579,9 +579,7 @@ class Electron:
     def escape(self):
         if self.xyz[2] > 0.0:
             return False
-    
-        self.diag["n_escape_calls"] += 1
-    
+        
         Ui = self.Ui
         Es = self.energy
         uz = self.uvw[2]
@@ -589,7 +587,6 @@ class Electron:
     
         # Barrier reflection
         if Es <= Ui or Eperp <= Ui:
-            self.diag["n_reflect_barrier"] += 1
             self.uvw[2] *= -1
             self.xyz[2] = 1e-10
             if self.save_coordinates:
