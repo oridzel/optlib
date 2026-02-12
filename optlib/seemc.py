@@ -520,127 +520,78 @@ class Electron:
             self.energy_se = 0.0
 
     def escape(self):
+        # only call when at/above surface crossing
         if self.xyz[2] > 0.0:
             return False
-        
-        Ui = self.Ui
-        Eperp = self.energy * (self.uvw[2] ** 2)
     
-        if self.energy <= Ui or Eperp <= Ui:
-            self.uvw[2] *= -1
-            self.xyz[2] = 1e-10
-            if self.save_coordinates:
-                self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
+        Ui = self.Ui
+        Es = self.energy
+        ux, uy, uz = self.uvw
+    
+        # If total energy is below barrier, it can never escape (step-barrier model)
+        if Es <= Ui:
+            self.dead = True
             return False
     
+        # perpendicular energy condition for having a propagating solution in vacuum
+        Eperp = Es * (uz * uz)
+        if Eperp <= Ui:
+            # reflect back into solid (diffuse)
+            self._diffuse_reflect_into_solid()
+            return False
+    
+        # quantum transmission probability for step (depends on Eperp)
         root = math.sqrt(1.0 - Ui / Eperp)
         t = 4.0 * root / ((1.0 + root) ** 2)
     
-        if self.rng.random() < t:
-            # Transmit into vacuum
-            self.inside = False
-        
-            Es = self.energy
-            Ev = Es - Ui
-            if Ev <= 0.0:
-                # should not happen because we already checked barrier
-                self.dead = True
-                return False
-        
-            # --- Angular refraction (conserve p_parallel) ---
-            ux, uy, uz = self.uvw
-            # scale tangential components: u_par_out = u_par_in * sqrt(Es/Ev)
-            s = math.sqrt(Es / Ev)
-            ux_out = ux * s
-            uy_out = uy * s
-        
-            par2 = ux_out*ux_out + uy_out*uy_out
-            # numerical guard (can happen right at threshold)
-            if par2 >= 1.0:
-                par2 = 1.0 - 1e-15
-        
-            # keep outgoing direction toward vacuum (z<0)
-            uz_out = -math.sqrt(1.0 - par2)
-        
-            # update direction + energy
-            self.uvw = [ux_out, uy_out, uz_out]
-            self.energy_vac = Ev
-            self.energy = Ev
-        
-            # place exactly at surface
-            self.xyz[2] = 0.0
-        
-            return True
-   
-        self.uvw[2] *= -1
-        self.xyz[2] = 1e-10
-        return False
-
-    # def escape(self):
-    #     if self.xyz[2] > 0.0:
-    #         return False
-        
-    #     Ui = self.Ui
-    #     Es = self.energy
-    #     uz = self.uvw[2]
-    #     Eperp = Es * (uz ** 2)
+        if self.rng.random() >= t:
+            # quantum reflection even though classically allowed -> reflect
+            self._diffuse_reflect_into_solid()
+            return False
     
-    #     # Barrier reflection
-    #     if Es <= Ui or Eperp <= Ui:
-    #         self.uvw[2] *= -1
-    #         self.xyz[2] = 1e-10
-    #         if self.save_coordinates:
-    #             self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
-    #         return False
+        # Transmit into vacuum
+        Ev = Es - Ui
+        if Ev <= 0.0:
+            self.dead = True
+            return False
     
-    #     root = math.sqrt(1.0 - Ui / Eperp)
-    #     t = 4.0 * root / ((1.0 + root) ** 2)
+        # conserve parallel momentum -> check for total internal reflection
+        Epar = Es * (ux*ux + uy*uy)
+        if Ev <= Epar:
+            # cannot satisfy real uz_out -> reflect instead (no clamping)
+            self._diffuse_reflect_into_solid()
+            return False
     
-    #     if self.rng.random() < t:
-    #         # Transmit into vacuum
-    #         self.inside = False
+        s = math.sqrt(Es / Ev)
+        ux_out = ux * s
+        uy_out = uy * s
+        uz_out = -math.sqrt(1.0 - (ux_out*ux_out + uy_out*uy_out))
     
-    #         Ev = Es - Ui
-    #         if Ev <= 0.0:
-    #             self.dead = True
-    #             return False
+        self.inside = False
+        self.uvw = [ux_out, uy_out, uz_out]
+        self.energy_vac = Ev
+        self.energy = Ev
+        self.xyz[2] = 0.0
+        return True
     
-    #         ux, uy, uz = self.uvw
-    #         par_in2 = ux*ux + uy*uy
     
-    #         # Refraction scaling (p_parallel conservation)
-    #         s = math.sqrt(Es / Ev)
-    #         ux_out = ux * s
-    #         uy_out = uy * s
-    #         par_out2 = ux_out*ux_out + uy_out*uy_out
+    def _diffuse_reflect_into_solid(self):
+        # Lambertian into solid half-space (uz > 0)
+        u = self.rng.random()
+        v = self.rng.random()
+        cos_t = math.sqrt(u)
+        sin_t = math.sqrt(max(1.0 - cos_t*cos_t, 0.0))
+        phi = 2.0 * math.pi * v
+        self.uvw[0] = sin_t * math.cos(phi)
+        self.uvw[1] = sin_t * math.sin(phi)
+        self.uvw[2] = cos_t
     
-    #         if par_out2 >= 1.0:
-    #             par_out2 = 1.0 - 1e-15
+        # push back a small distance (same length unit as mfp)
+        push = 1e-3 * min(self.sample.get_imfp(self.energy), self.sample.get_emfp(self.energy))
+        self.xyz[2] = max(push, 1e-6)
     
-    #         uz_out = -math.sqrt(1.0 - par_out2)
-    
-    #         # update direction + energy
-    #         self.uvw = [ux_out, uy_out, uz_out]
-    #         self.energy_vac = Ev
-    #         self.energy = Ev
-    #         self.xyz[2] = 0.0
-    #         return True
-    
-    #     # Diffuse reflection into the solid (uz > 0)
-    #     # u = self.rng.random()
-    #     # v = self.rng.random()
-    #     # cos_t = math.sqrt(u)                 # Lambertian
-    #     # sin_t = math.sqrt(1.0 - cos_t*cos_t)
-    #     # phi = 2.0 * math.pi * v
-    #     # self.uvw[0] = sin_t * math.cos(phi)
-    #     # self.uvw[1] = sin_t * math.sin(phi)
-    #     # self.uvw[2] = cos_t        
-    #     # self.xyz[2] = 1e-3 * min(self.sample.get_imfp(self.energy), self.sample.get_emfp(self.energy))
-    #     self.uvw[2] *= -1
-    #     self.xyz[2] = 1e-10
-    #     if self.save_coordinates:
-    #         self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
-    #     return False
+        if self.save_coordinates:
+            self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
 
 
     def change_direction(self, uvw, deflection):
