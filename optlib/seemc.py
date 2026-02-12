@@ -62,6 +62,10 @@ def _run_one_trajectory_worker(args):
     sey = 0
     bse = 0
 
+    n_inelastic = 0
+    n_spawned = 0
+    n_electrons_max = 1
+
     electrons = []
     E_s0 = float(E0) + sample.Ui
 
@@ -101,6 +105,7 @@ def _run_one_trajectory_worker(args):
             made_inelastic = e.scatter()
 
             if made_inelastic:
+                n_inelastic += 1
                 se_energy = e.energy_loss + e.energy_se
 
                 # spawn criterion (metal): only above EF for this model
@@ -117,6 +122,9 @@ def _run_one_trajectory_worker(args):
                             xyz=se_xyz, uvw=se_uvw, gen=e.generation + 1, se=True, ind=i, rng=rng
                         )
                     )
+                    n_spawned += 1
+                    if len(electrons) > n_electrons_max:
+                        n_electrons_max = len(electrons)
 
         if _G.track:
             traj_tracks.append(e.coordinates)
@@ -124,7 +132,7 @@ def _run_one_trajectory_worker(args):
         electrons[i] = None
         i += 1
 
-    return tey, sey, bse, (traj_tracks if _G.track else None)
+    return tey, sey, bse, (traj_tracks if _G.track else None), n_inelastic, n_spawned, n_electrons_max
     
 
 class Sample:
@@ -902,7 +910,11 @@ class SEEMC:
                 t_tey = t_sey = t_bse = 0
                 tracks_E = [] if self.track_trajectories else None
     
-                for tey, sey, bse, trk in tqdm(
+                total_inelastic = 0
+                total_spawned = 0
+                max_cascade = 0
+                
+                for tey, sey, bse, trk, ninel, nspawn, nelecmax in tqdm(
                     pool.imap_unordered(_run_one_trajectory_worker, tasks, chunksize=chunksize),
                     total=self.n_trajectories,
                     desc=f"E={E0:.1f} eV",
@@ -910,14 +922,24 @@ class SEEMC:
                     t_tey += tey
                     t_sey += sey
                     t_bse += bse
+                    total_inelastic += ninel
+                    total_spawned += nspawn
+                    if nelecmax > max_cascade:
+                        max_cascade = nelecmax
                     if self.track_trajectories:
                         tracks_E.append(trk)
     
                 self.tey[k] = t_tey / self.n_trajectories
                 self.sey[k] = t_sey / self.n_trajectories
                 self.bse[k] = t_bse / self.n_trajectories
+                
                 if self.track_trajectories:
                     self.tracks.append(tracks_E)
+
+                print(f"\nPhysics diagnostics for E={E0:.1f} eV")
+                print(f"  Avg inelastic events per primary: {total_inelastic / self.n_trajectories:.2f}")
+                print(f"  Avg secondaries spawned per primary: {total_spawned / self.n_trajectories:.2f}")
+                print(f"  Max cascade size observed: {max_cascade}")
     
         print(f"Done in {time.time() - t0:.1f} s")
 
