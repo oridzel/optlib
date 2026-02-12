@@ -104,7 +104,7 @@ def _run_one_trajectory_worker(args):
                 se_energy = e.energy_loss + e.energy_se
 
                 # spawn criterion (metal): only above EF for this model
-                if sample.is_metal and se_energy <= e.e_fermi:
+                if sample.is_metal and se_energy <= e.Ui:
                     pass
                 else:
                     se_defl = [math.pi - e.deflection[0],
@@ -777,7 +777,7 @@ class SEEMC:
                     se_energy = e.energy_loss + e.energy_se
     
                     # spawn criterion (metal): only above EF for this model
-                    if self.sample.is_metal and se_energy <= e.e_fermi:
+                    if self.sample.is_metal and se_energy <= e.Ui:
                         pass
                     else:
                         se_defl = [math.pi - e.deflection[0], (e.deflection[1] + math.pi) % (2*math.pi)]
