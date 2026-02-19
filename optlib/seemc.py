@@ -668,8 +668,7 @@ class Electron:
             E_initial = alpha * np.dot(k_vec, k_vec)
             E_final   = alpha * np.dot(k_final, k_final)
         
-            # energy above Fermi level
-            self.energy_se = E_final - self.sample.e_fermi
+            self.energy_se = E_final
         
         else:
             # plasmon channel → use old feg_dos phase-space decay
