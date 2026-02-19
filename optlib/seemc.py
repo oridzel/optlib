@@ -100,7 +100,7 @@ def _run_one_trajectory_worker(args):
 
             made_inelastic = e.scatter()
 
-            if made_inelastic:
+            if made_inelastic and e.energy_se > 0.0:
                 se_energy = e.energy_loss + e.energy_se
 
                 if sample.is_metal and se_energy <= e.Ui:
@@ -436,6 +436,59 @@ class Sample:
         # simplest: just trust sampler’s own channel/omega sampling:
         return ch2, omega2, q
 
+    def sample_target_k_FEG(self, omega, q, rng):
+        """
+        Sample initial target electron k-vector inside Fermi sphere
+        consistent with (omega, q) for single-electron excitation.
+    
+        Returns k_vec (3-array) or None if no allowed state.
+        Units:
+            q in Å^-1
+            omega in eV
+        """
+    
+        alpha = HBAR2_2M_eVA2  # ħ²/2m in eV·Å²
+    
+        # Fermi wavevector
+        if not self.is_metal:
+            return None  # only defined for metal FEG
+    
+        kF = math.sqrt(max(self.e_fermi, 0.0) / alpha)
+    
+        if q <= 0.0:
+            return None
+    
+        # k_z plane from energy-momentum constraint:
+        # k_z = (omega/alpha - q^2) / (2q)
+        kz = (omega / alpha - q*q) / (2.0*q)
+    
+        # must lie inside Fermi sphere
+        r_out_sq = kF*kF - kz*kz
+        if r_out_sq <= 0.0:
+            return None
+    
+        r_out = math.sqrt(r_out_sq)
+    
+        # Pauli blocking: final state k+q must lie outside Fermi sphere
+        # |k+q|^2 = k_perp^2 + (kz+q)^2
+        r_in_sq = kF*kF - (kz + q)*(kz + q)
+    
+        if r_in_sq > 0.0:
+            r_in = math.sqrt(r_in_sq)
+            if r_in >= r_out:
+                return None  # fully blocked
+        else:
+            r_in = 0.0
+    
+        # Sample uniformly in disk or annulus
+        u = rng.random()
+        r = math.sqrt(r_in*r_in + u*(r_out*r_out - r_in*r_in))
+        phi = 2.0 * math.pi * rng.random()
+    
+        kx = r * math.cos(phi)
+        ky = r * math.sin(phi)
+    
+        return np.array([kx, ky, kz])
 
 
 class Electron:
@@ -576,43 +629,52 @@ class Electron:
         self.energy_loss = float(omega)
 
         # apply energy loss to primary
+        E_before = self.energy
         self.energy -= self.energy_loss
         self.is_dead()
         if self.dead:
-            # inelastic happened but primary died
             self.energy_se = 0.0
             return True
-
-        # --- deflection from q and energies (no angular_iimfp / ELF spline) ---
-        # kinematics with free-electron dispersion:
-        # k^2 = E/(ħ²/2m); k'^2 = (E+ω - ω)/(ħ²/2m) after loss => use E_before and E_after
-        E_before = self.energy + self.energy_loss
-        E_after  = self.energy
-
+        
+        # --- projectile deflection from q ---
+        E_after = self.energy
         k  = math.sqrt(max(E_before, 0.0) / HBAR2_2M_eVA2)
         kp = math.sqrt(max(E_after,  0.0) / HBAR2_2M_eVA2)
-
-        # guard
-        if k <= 0.0 or kp <= 0.0:
-            self.deflection[0] = 0.0
-        else:
-            # q^2 = k^2 + k'^2 - 2 k k' cos(theta)  -> cos(theta) = (k^2 + k'^2 - q^2)/(2 k k')
+        
+        if k > 0 and kp > 0:
             cos_th = (k*k + kp*kp - q*q) / (2.0*k*kp)
             cos_th = min(1.0, max(-1.0, cos_th))
             self.deflection[0] = math.acos(cos_th)
-
-        # update direction
-        self.uvw = self.change_direction(self.uvw, self.deflection)
-        self.is_dead()
-
-        # --- secondary generation bookkeeping ---
-        if ch == "se":
-            # single-electron excitation: sample target electron energy
-            self.feg_dos()
         else:
-            # plasmon: do NOT create a direct secondary here (unless you implement plasmon decay)
-            self.energy_se = 0.0
-
+            self.deflection[0] = 0.0
+        
+        self.uvw = self.change_direction(self.uvw, self.deflection)
+        
+        # --------------------------------------------------
+        # SECONDARY GENERATION DEPENDS ON CHANNEL
+        # --------------------------------------------------
+        
+        if ch == "se":
+            # --- Fermi sphere disk sampling ---
+            k_vec = self.sample.sample_target_k_FEG(omega, q, self.rng)
+            if k_vec is None:
+                self.energy_se = 0.0
+                return True
+        
+            # final target momentum
+            k_final = np.array([k_vec[0], k_vec[1], k_vec[2] + q])
+        
+            alpha = HBAR2_2M_eVA2
+            E_initial = alpha * np.dot(k_vec, k_vec)
+            E_final   = alpha * np.dot(k_final, k_final)
+        
+            # energy above Fermi level
+            self.energy_se = E_final - self.sample.e_fermi
+        
+        else:
+            # plasmon channel → use old feg_dos phase-space decay
+            self.feg_dos()
+        
         return True
 
     def feg_dos(self):
@@ -938,7 +1000,7 @@ class SEEMC:
     
                 made_inelastic = e.scatter()
 
-                if made_inelastic and e.inel_channel == "se":
+                if made_inelastic and e.energy_se > 0.0:
                     se_energy = e.energy_loss + e.energy_se
     
                     # spawn criterion (metal): only above EF for this model
