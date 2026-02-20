@@ -173,7 +173,7 @@ class Sample:
         self.Ui = self.e_fermi + self.work_function
         
         # --- Channel-resolved inelastic sampler (uses diimfp_pl/se(q,omega)) ---
-        self._inel_sampler = InelasticChannelSampler(self.material_data)
+        # self._inel_sampler = InelasticChannelSampler(self.material_data)
 
         # ---Precompute ω-CDFs per energy bin per channel (fast) ---
         self._precompute_inelastic_channel_cdfs()
@@ -278,6 +278,33 @@ class Sample:
         return self._dos_cdf_cache
 
 
+    def _precompute_inelastic_channel_cdfs(self):
+        """
+        Precompute CDFs for diimfp_se and diimfp_pl over omega for all energy bins.
+        Expects:
+          diimfp_se, diimfp_pl: (Nw,2,NE) where [:,0,:]=omega grid, [:,1,:]=pdf
+        """
+        def build(di_key):
+            di = np.asarray(self.material_data[di_key], float)  # (Nw,2,NE)
+            eloss = di[:, 0, :]   # (Nw,NE)
+            pdf   = np.nan_to_num(di[:, 1, :], nan=0.0, posinf=0.0, neginf=0.0)
+    
+            dx = np.diff(eloss, axis=0)
+            area = 0.5 * (pdf[1:, :] + pdf[:-1, :]) * dx
+            cdf = np.vstack([np.zeros((1, area.shape[1])), np.cumsum(area, axis=0)])
+    
+            total = cdf[-1, :]
+            has = (total > 0) & np.isfinite(total)
+    
+            cdf_norm = np.zeros_like(cdf)
+            cdf_norm[:, has] = cdf[:, has] / total[has]
+            cdf_norm[:, ~has] = 0.0
+            return eloss, cdf_norm, has
+    
+        self._inel_eloss_se, self._inel_cdf_se, self._inel_has_se = build("diimfp_se")
+        self._inel_eloss_pl, self._inel_cdf_pl, self._inel_has_pl = build("diimfp_pl")
+
+
     def _precompute_elastic_cdfs(self):
         theta = np.asarray(self.material_data['decs_theta'], dtype=float)
         decs = np.asarray(self.material_data['decs'], dtype=float)  # (Ntheta, Nenergy)
@@ -349,92 +376,185 @@ class Sample:
         E = self._clip_E(E)
         return float(np.interp(E, self.Egrid, self.material_data["inv_imfp_se"]))
 
-    def _precompute_inelastic_channel_cdfs(self):
+    # def _precompute_inelastic_channel_cdfs(self):
+    #     """
+    #     Precompute per-energy-bin CDFs for omega for each channel.
+    #     This makes sampling omega fast; q is still conditional on omega per event.
+    #     """
+    #     q = np.asarray(self.material_data["q"], float)
+    #     w = np.asarray(self.material_data["omega"], float)
+
+    #     nq, nw = q.size, w.size
+    #     di_pl = _as_q_by_w(self.material_data["diimfp_pl"], nq, nw)
+    #     di_se = _as_q_by_w(self.material_data["diimfp_se"], nq, nw)
+
+    #     # If your diimfp_{pl,se} are energy-dependent, then this needs to be 3D.
+    #     # From your DB description they are 2D maps (q,omega) shared across E.
+    #     # So we just store CDFs once (global). If you later add E-dependence, refactor.
+    #     dq = np.diff(q)
+    #     dlam_dw_pl = np.sum(0.5 * (di_pl[1:, :] + di_pl[:-1, :]) * dq[:, None], axis=0)
+    #     dlam_dw_se = np.sum(0.5 * (di_se[1:, :] + di_se[:-1, :]) * dq[:, None], axis=0)
+
+    #     cdf_pl = _cdf_from_pdf(dlam_dw_pl, w)
+    #     cdf_se = _cdf_from_pdf(dlam_dw_se, w)
+
+    #     self._inel_w = w
+    #     self._inel_dlam_dw_pl = dlam_dw_pl
+    #     self._inel_dlam_dw_se = dlam_dw_se
+    #     self._inel_cdf_w_pl = cdf_pl
+    #     self._inel_cdf_w_se = cdf_se
+
+    # def sample_inelastic_channel_w_q(self, E, rng):
+    #     """
+    #     Sample channel, omega, q using:
+    #       - channel weights from inv_imfp_pl/se(E)
+    #       - omega from marginal ∫dq diimfp_ch(q,omega), truncated by omega<=Eeff
+    #       - q from conditional diimfp_ch(q|omega), restricted to projectile kinematic [q-,q+]
+    #     Returns (ch, omega, q) or None.
+    #     """
+    #     # metal guard (same as Electron.iimfp)
+    #     if self.is_metal and E <= self.e_fermi:
+    #         return None
+
+    #     # Use Eeff if you enforce omega <= E - EF for metals (recommended):
+    #     Eeff = E - self.e_fermi if self.is_metal else E
+    #     if Eeff <= 0.0:
+    #         return None
+
+    #     inv_pl = self.inv_imfp_pl(E)
+    #     inv_se = self.inv_imfp_se(E)
+    #     s = inv_pl + inv_se
+    #     if not np.isfinite(s) or s <= 0.0:
+    #         return None
+
+    #     ch = "pl" if (rng.random() < inv_pl / s) else "se"
+
+    #     # omega sampling from precomputed CDF, truncated at Eeff
+    #     w = self._inel_w
+    #     iwmax = int(np.searchsorted(w, Eeff, side="right") - 1)
+    #     iwmax = int(np.clip(iwmax, 0, w.size - 1))
+    #     if iwmax < 1:
+    #         return None
+
+    #     if ch == "pl":
+    #         cdf_full = self._inel_cdf_w_pl
+    #     else:
+    #         cdf_full = self._inel_cdf_w_se
+    #     if cdf_full is None:
+    #         return None
+
+    #     # Renormalize truncated CDF [0..iwmax] by linear scaling
+    #     cdf_tr = cdf_full[:iwmax + 1]
+    #     cmax = float(cdf_tr[-1])
+    #     if cmax <= 0.0 or not np.isfinite(cmax):
+    #         return None
+
+    #     u = rng.random() * cmax
+    #     omega = _sample_from_cdf(cdf_tr, w[:iwmax + 1], u / cmax)
+
+    #     # q conditional on omega using your InelasticChannelSampler (no reject)
+    #     # (it already handles kinematic q-bounds)
+    #     res = self._inel_sampler.sample(Eeff, rng=rng)
+    #     if res is None:
+    #         return None
+    #     ch2, omega2, q = res
+
+    #     # ensure consistency: force channel we chose, but reuse omega from the same sample
+    #     # simplest: just trust sampler’s own channel/omega sampling:
+    #     return ch2, omega2, q
+
+    def sample_inelastic_channel_w_q(self, E_solid_eV, rng):
         """
-        Precompute per-energy-bin CDFs for omega for each channel.
-        This makes sampling omega fast; q is still conditional on omega per event.
+        Option A sampler:
+          1) choose channel using inv_imfp_pl/se(E)
+          2) sample omega from diimfp_pl/se CDF at that energy bin
+          3) sample q from ELF_pl/se(omega,q) within kinematic bounds
+    
+        Returns (ch, omega_eV, q_a0inv) or None.
         """
-        q = np.asarray(self.material_data["q"], float)
-        w = np.asarray(self.material_data["omega"], float)
-
-        nq, nw = q.size, w.size
-        di_pl = _as_q_by_w(self.material_data["diimfp_pl"], nq, nw)
-        di_se = _as_q_by_w(self.material_data["diimfp_se"], nq, nw)
-
-        # If your diimfp_{pl,se} are energy-dependent, then this needs to be 3D.
-        # From your DB description they are 2D maps (q,omega) shared across E.
-        # So we just store CDFs once (global). If you later add E-dependence, refactor.
-        dq = np.diff(q)
-        dlam_dw_pl = np.sum(0.5 * (di_pl[1:, :] + di_pl[:-1, :]) * dq[:, None], axis=0)
-        dlam_dw_se = np.sum(0.5 * (di_se[1:, :] + di_se[:-1, :]) * dq[:, None], axis=0)
-
-        cdf_pl = _cdf_from_pdf(dlam_dw_pl, w)
-        cdf_se = _cdf_from_pdf(dlam_dw_se, w)
-
-        self._inel_w = w
-        self._inel_dlam_dw_pl = dlam_dw_pl
-        self._inel_dlam_dw_se = dlam_dw_se
-        self._inel_cdf_w_pl = cdf_pl
-        self._inel_cdf_w_se = cdf_se
-
-    def sample_inelastic_channel_w_q(self, E, rng):
-        """
-        Sample channel, omega, q using:
-          - channel weights from inv_imfp_pl/se(E)
-          - omega from marginal ∫dq diimfp_ch(q,omega), truncated by omega<=Eeff
-          - q from conditional diimfp_ch(q|omega), restricted to projectile kinematic [q-,q+]
-        Returns (ch, omega, q) or None.
-        """
-        # metal guard (same as Electron.iimfp)
-        if self.is_metal and E <= self.e_fermi:
+        # metal guard (your model)
+        if self.is_metal and E_solid_eV <= self.e_fermi:
             return None
-
-        # Use Eeff if you enforce omega <= E - EF for metals (recommended):
-        Eeff = E - self.e_fermi if self.is_metal else E
+    
+        # energy bin for ω tables and inv_imfp arrays
+        ind = self.energy_index(E_solid_eV)
+    
+        inv_pl = float(self.material_data["inv_imfp_pl"][ind])
+        inv_se = float(self.material_data["inv_imfp_se"][ind])
+        s = inv_pl + inv_se
+        if s <= 0.0 or not np.isfinite(s):
+            return None
+        ch = "pl" if (rng.random() < inv_pl / s) else "se"
+    
+        # ω sampling (and enforce ω <= E - EF for metals)
+        Eeff = E_solid_eV - self.e_fermi if self.is_metal else E_solid_eV
         if Eeff <= 0.0:
             return None
-
-        inv_pl = self.inv_imfp_pl(E)
-        inv_se = self.inv_imfp_se(E)
-        s = inv_pl + inv_se
-        if not np.isfinite(s) or s <= 0.0:
-            return None
-
-        ch = "pl" if (rng.random() < inv_pl / s) else "se"
-
-        # omega sampling from precomputed CDF, truncated at Eeff
-        w = self._inel_w
-        iwmax = int(np.searchsorted(w, Eeff, side="right") - 1)
-        iwmax = int(np.clip(iwmax, 0, w.size - 1))
-        if iwmax < 1:
-            return None
-
-        if ch == "pl":
-            cdf_full = self._inel_cdf_w_pl
+    
+        if ch == "se":
+            if not self._inel_has_se[ind]:
+                return None
+            wgrid = self._inel_eloss_se[:, ind]
+            cdf   = self._inel_cdf_se[:, ind]
         else:
-            cdf_full = self._inel_cdf_w_se
-        if cdf_full is None:
+            if not self._inel_has_pl[ind]:
+                return None
+            wgrid = self._inel_eloss_pl[:, ind]
+            cdf   = self._inel_cdf_pl[:, ind]
+    
+        # sample ω, but reject/clip beyond Eeff (simple and safe)
+        omega = float(np.interp(rng.random(), cdf, wgrid))
+        if omega <= 0.0 or omega >= Eeff:
             return None
-
-        # Renormalize truncated CDF [0..iwmax] by linear scaling
-        cdf_tr = cdf_full[:iwmax + 1]
-        cmax = float(cdf_tr[-1])
-        if cmax <= 0.0 or not np.isfinite(cmax):
+    
+        # q sampling from ELF at this omega (still need E for q-bounds)
+        q = self.sample_q_from_elf(ch, Eeff, omega, rng)
+        if q is None:
             return None
+    
+        return ch, omega, q
 
-        u = rng.random() * cmax
-        omega = _sample_from_cdf(cdf_tr, w[:iwmax + 1], u / cmax)
-
-        # q conditional on omega using your InelasticChannelSampler (no reject)
-        # (it already handles kinematic q-bounds)
-        res = self._inel_sampler.sample(Eeff, rng=rng)
-        if res is None:
+    def sample_target_k_FEG_disk_au(self, omega_eV, q_a0inv, rng):
+        """
+        Disk/annulus sampling in atomic units.
+        Returns k_vec (a0^-1) or None.
+        """
+        if not self.is_metal:
             return None
-        ch2, omega2, q = res
-
-        # ensure consistency: force channel we chose, but reuse omega from the same sample
-        # simplest: just trust sampler’s own channel/omega sampling:
-        return ch2, omega2, q
+        if q_a0inv <= 0.0:
+            return None
+    
+        omega_h = omega_eV / h2ev
+        ef_h    = self.e_fermi / h2ev
+    
+        kF = math.sqrt(max(2.0 * ef_h, 0.0))  # since E = k^2/2 (Hartree)
+    
+        q = float(q_a0inv)
+    
+        # from ω = (q^2 + 2 kz q)/2  -> kz = (2ω - q^2)/(2q)
+        kz = (2.0 * omega_h - q*q) / (2.0 * q)
+    
+        r_out_sq = kF*kF - kz*kz
+        if r_out_sq <= 0.0:
+            return None
+        r_out = math.sqrt(r_out_sq)
+    
+        # Pauli blocking: |k+q| >= kF  -> k_perp^2 + (kz+q)^2 >= kF^2
+        r_in_sq = kF*kF - (kz + q)*(kz + q)
+        if r_in_sq > 0.0:
+            r_in = math.sqrt(r_in_sq)
+            if r_in >= r_out:
+                return None
+        else:
+            r_in = 0.0
+    
+        u = rng.random()
+        r = math.sqrt(r_in*r_in + u*(r_out*r_out - r_in*r_in))
+        phi = 2.0 * math.pi * rng.random()
+    
+        kx = r * math.cos(phi)
+        ky = r * math.sin(phi)
+        return np.array([kx, ky, kz], float)
 
     def sample_target_k_FEG(self, omega, q, rng):
         """
@@ -489,6 +609,90 @@ class Sample:
         ky = r * math.sin(phi)
     
         return np.array([kx, ky, kz])
+
+    def elf_channel_splines(self):
+        """
+        Build RectBivariateSpline on (omega_hartree, log(q_a0inv)) for elf_se and elf_pl.
+        Assumes:
+          material_data['omega'] in eV
+          material_data['q'] in a0^-1
+          material_data['elf_se'], ['elf_pl'] shaped (Nw,Nq)
+        """
+        if getattr(self, "_elf_se_spl", None) is None:
+            omega_h = np.asarray(self.material_data["omega"], float) / h2ev  # Hartree
+            q_a0inv = np.asarray(self.material_data["q"], float)            # a0^-1
+            qlog = np.log(q_a0inv)
+    
+            elf_se = np.asarray(self.material_data["elf_se"], float)
+            elf_pl = np.asarray(self.material_data["elf_pl"], float)
+    
+            # ensure (Nw,Nq)
+            if elf_se.shape != (omega_h.size, qlog.size):
+                if elf_se.shape == (qlog.size, omega_h.size):
+                    elf_se = elf_se.T
+                    elf_pl = elf_pl.T
+                else:
+                    raise ValueError(f"ELF shape mismatch: elf_se {elf_se.shape}, expected (Nw,Nq)")
+    
+            self._elf_se_spl = RectBivariateSpline(omega_h, qlog, elf_se, kx=1, ky=1)
+            self._elf_pl_spl = RectBivariateSpline(omega_h, qlog, elf_pl, kx=1, ky=1)
+    
+            self._qlog_grid = qlog
+    
+        return self._elf_se_spl, self._elf_pl_spl
+
+    def _qlog_bounds_rel(self, E_eV, omega_eV):
+        """
+        Relativistic q bounds in atomic units (a0^-1), returned as (qm_log, qp_log).
+        Matches your database-build formulas.
+        """
+        c = 137.036
+        e0 = E_eV / h2ev
+        om = omega_eV / h2ev
+        emw = max(e0 - om, 0.0)
+        qm = np.log(np.sqrt(e0*(2 + e0/c**2)) - np.sqrt(emw*(2 + emw/c**2)))
+        qp = np.log(np.sqrt(e0*(2 + e0/c**2)) + np.sqrt(emw*(2 + emw/c**2)))
+        return qm, qp
+    
+    def sample_q_from_elf(self, ch, E_eV, omega_eV, rng):
+        """
+        Sample q (a0^-1) from ELF_ch(omega,q) over allowed projectile bounds [q-, q+].
+        Sampling is done in log(q), consistent with how DIIMFP was integrated (d log q).
+        """
+        se_spl, pl_spl = self.elf_channel_splines()
+        spl = se_spl if ch == "se" else pl_spl
+    
+        # bounds in log(q)
+        qm, qp = self._qlog_bounds_rel(E_eV, omega_eV)
+        if not np.isfinite(qm) or not np.isfinite(qp) or qp <= qm:
+            return None
+    
+        qlog_grid = self._qlog_grid
+        i0 = int(np.searchsorted(qlog_grid, qm, side="left"))
+        i1 = int(np.searchsorted(qlog_grid, qp, side="right") - 1)
+        i0 = max(i0, 0)
+        i1 = min(i1, qlog_grid.size - 1)
+        if i1 <= i0:
+            return None
+    
+        qlog = qlog_grid[i0:i1+1]
+    
+        # evaluate ELF at this omega on the qlog slice
+        omega_h = omega_eV / h2ev
+        w = np.asarray(spl.ev(np.full_like(qlog, omega_h), qlog), float)
+        w = np.nan_to_num(w, nan=0.0, posinf=0.0, neginf=0.0)
+        w[w < 0] = 0.0
+    
+        # build CDF in qlog
+        cdf = cumtrapz_numpy(w, qlog)
+        tot = float(cdf[-1])
+        if tot <= 0.0 or not np.isfinite(tot):
+            return None
+        cdf /= tot
+    
+        qlog_s = float(np.interp(rng.random(), cdf, qlog))
+        q = float(np.exp(qlog_s))  # a0^-1
+        return q
 
 
 class Electron:
@@ -620,15 +824,15 @@ class Electron:
             # should not happen because iimfp=0, but stay safe
             return False
 
+        # -------- inelastic (channel-resolved, Option A) --------
         triple = self.sample.sample_inelastic_channel_w_q(self.energy, self.rng)
         if triple is None:
             return False
-
-        ch, omega, q = triple
+        
+        ch, omega, q_a0inv = triple
         self.inel_channel = ch
         self.energy_loss = float(omega)
-
-        # apply energy loss to primary
+        
         E_before = self.energy
         self.energy -= self.energy_loss
         self.is_dead()
@@ -636,13 +840,15 @@ class Electron:
             self.energy_se = 0.0
             return True
         
-        # --- projectile deflection from q ---
-        E_after = self.energy
-        k  = math.sqrt(max(E_before, 0.0) / HBAR2_2M_eVA2)
-        kp = math.sqrt(max(E_after,  0.0) / HBAR2_2M_eVA2)
+        # projectile deflection:
+        # you currently compute deflection from q in Å^-1; but here q is a0^-1.
+        # Convert q(a0^-1) -> q(Å^-1) by dividing by a0(Å):
+        q_Ainv = q_a0inv / a0
         
+        k  = math.sqrt(max(E_before, 0.0) / HBAR2_2M_eVA2)
+        kp = math.sqrt(max(self.energy, 0.0) / HBAR2_2M_eVA2)
         if k > 0 and kp > 0:
-            cos_th = (k*k + kp*kp - q*q) / (2.0*k*kp)
+            cos_th = (k*k + kp*kp - q_Ainv*q_Ainv) / (2.0*k*kp)
             cos_th = min(1.0, max(-1.0, cos_th))
             self.deflection[0] = math.acos(cos_th)
         else:
@@ -650,28 +856,19 @@ class Electron:
         
         self.uvw = self.change_direction(self.uvw, self.deflection)
         
-        # --------------------------------------------------
-        # SECONDARY GENERATION DEPENDS ON CHANNEL
-        # --------------------------------------------------
-        
+        # secondary energy model:
         if ch == "se":
-            # --- Fermi sphere disk sampling ---
-            k_vec = self.sample.sample_target_k_FEG(omega, q, self.rng)
-            if k_vec is None:
+            k_i = self.sample.sample_target_k_FEG_disk_au(self.energy_loss, q_a0inv, self.rng)
+            if k_i is None:
                 self.energy_se = 0.0
                 return True
         
-            # final target momentum
-            k_final = np.array([k_vec[0], k_vec[1], k_vec[2] + q])
-        
-            alpha = HBAR2_2M_eVA2
-            E_initial = alpha * np.dot(k_vec, k_vec)
-            E_final   = alpha * np.dot(k_final, k_final)
-        
-            self.energy_se = E_final
-        
+            k_f = np.array([k_i[0], k_i[1], k_i[2] + q_a0inv])
+            Ei_h = 0.5 * float(np.dot(k_i, k_i))
+            # Ef_h = 0.5 * float(np.dot(k_f, k_f))  # would equal Ei_h + omega_h
+            self.energy_se = Ei_h * h2ev            # VB-bottom referenced initial energy
         else:
-            # plasmon channel → use old feg_dos phase-space decay
+            # plasmon: keep your existing phase-space secondary model
             self.feg_dos()
         
         return True
