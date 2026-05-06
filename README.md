@@ -19,7 +19,7 @@ Make sure you have Python 3.8+ [installed properly](https://docs.python-guide.or
 **Option 1: Install directly from GitHub**
 The easiest way to install the library and all its dependencies (like `numpy`, `scipy`, `nlopt`, etc.):
 ```bash
-pip install git+[https://github.com/oridzel/optlib.git](https://github.com/oridzel/optlib.git)
+pip install git+https://github.com/oridzel/optlib.git
 ```
 
 **Option 2: Clone and install locally (Recommended for development)**
@@ -82,6 +82,3 @@ plt.show()
 * `optlib/optimfit.py`: NLopt-based fitting routines for retrieving optical constants from experimental data.
 * `optlib/seemc.py`: The Monte Carlo trajectory simulator.
 * `optlib/utils.py` & `constants.py`: Shared math helpers, unit conversions, and physical constants.
-
-## 📄 License
-[Insert License Here - e.g., MIT License]
