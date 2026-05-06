@@ -780,15 +780,20 @@ class Electron:
         s = -math.log(self.rng.random()) / rate
 
         # stop exactly at surface if would cross (vacuum is z<0)
+        hit_surface = False
         if self.uvw[2] < 0.0 and abs(self.uvw[2]) > 1e-15:
             s_to_surface = -self.xyz[2] / self.uvw[2]
             if 0.0 <= s_to_surface < s:
                 s = s_to_surface
-
+                hit_surface = True
+        
         self.path_length += s
         self.xyz[0] += self.uvw[0] * s
         self.xyz[1] += self.uvw[1] * s
         self.xyz[2] += self.uvw[2] * s
+        
+        if hit_surface:
+            self.xyz[2] = 0.0  # Explicitly snap to surface
 
         if self.save_coordinates:
             self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
@@ -837,7 +842,6 @@ class Electron:
         self.energy -= self.energy_loss
         self.is_dead()
         if self.dead:
-            self.energy_se = 0.0
             return True
         
         # projectile deflection:
@@ -889,8 +893,9 @@ class Electron:
             self.energy_se = 0.0
 
     def escape(self):
-        # only call when at/above surface crossing
-        if self.xyz[2] > 0.0:
+        # Only call when at/above surface crossing
+        # Remember to use the 1e-12 epsilon fix discussed previously!
+        if self.xyz[2] > 1e-12:
             return False
     
         Ui = self.Ui
@@ -899,23 +904,21 @@ class Electron:
     
         # If total energy is below barrier, it can never escape (step-barrier model)
         if Es <= Ui:
-            self.dead = True
+            self._specular_reflect_into_solid()
             return False
     
-        # perpendicular energy condition for having a propagating solution in vacuum
+        # Perpendicular energy condition for having a propagating solution in vacuum
         Eperp = Es * (uz * uz)
         if Eperp <= Ui:
-            # reflect back into solid (diffuse)
-            self._diffuse_reflect_into_solid()
+            self._specular_reflect_into_solid()
             return False
     
-        # quantum transmission probability for step (depends on Eperp)
+        # Quantum transmission probability for step (depends on Eperp)
         root = math.sqrt(1.0 - Ui / Eperp)
         t = 4.0 * root / ((1.0 + root) ** 2)
     
         if self.rng.random() >= t:
-            # quantum reflection even though classically allowed -> reflect
-            self._diffuse_reflect_into_solid()
+            self._specular_reflect_into_solid()
             return False
     
         # Transmit into vacuum
@@ -924,16 +927,18 @@ class Electron:
             self.dead = True
             return False
     
-        # conserve parallel momentum -> check for total internal reflection
+        # Conserve parallel momentum -> check for total internal reflection
         Epar = Es * (ux*ux + uy*uy)
         if Ev <= Epar:
-            # cannot satisfy real uz_out -> reflect instead (no clamping)
-            self._diffuse_reflect_into_solid()
+            # Cannot satisfy real uz_out -> reflect specularly
+            self._specular_reflect_into_solid()
             return False
     
+        # Calculate new trajectory in vacuum (conserving parallel momentum)
         s = math.sqrt(Es / Ev)
         ux_out = ux * s
         uy_out = uy * s
+        # Vacuum is z < 0, so uz_out must be negative
         uz_out = -math.sqrt(1.0 - (ux_out*ux_out + uy_out*uy_out))
     
         self.inside = False
@@ -944,21 +949,14 @@ class Electron:
         return True
     
     
-    def _diffuse_reflect_into_solid(self):
-        # Lambertian into solid half-space (uz > 0)
-        u = self.rng.random()
-        v = self.rng.random()
-        cos_t = math.sqrt(u)
-        sin_t = math.sqrt(max(1.0 - cos_t*cos_t, 0.0))
-        phi = 2.0 * math.pi * v
-        self.uvw[0] = sin_t * math.cos(phi)
-        self.uvw[1] = sin_t * math.sin(phi)
-        self.uvw[2] = cos_t
-    
-        # push back a small distance (same length unit as mfp)
-        push = 1e-3 * min(self.sample.get_imfp(self.energy), self.sample.get_emfp(self.energy))
-        self.xyz[2] = max(push, 1e-6)
-    
+    def _specular_reflect_into_solid(self):
+        # Specular reflection: invert only the surface-normal velocity (z-axis)
+        # Since the solid is z > 0, the new uz must be positive
+        self.uvw[2] = abs(self.uvw[2])
+        
+        # Push back a tiny distance to avoid being trapped exactly at z=0 due to floating point limits
+        self.xyz[2] = 1e-6
+        
         if self.save_coordinates:
             self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
 
@@ -1137,6 +1135,7 @@ class SEEMC:
         self.cb_ref = cb_ref
         self.track_trajectories = track
         self.incident_angle = float(angle)
+        self.db_path = db_path
 
         self.tey = np.zeros(len(self.energy_array))
         self.sey = np.zeros(len(self.energy_array))
@@ -1264,7 +1263,7 @@ class SEEMC:
         with ctx.Pool(
             processes=nproc,
             initializer=_init_worker,
-            initargs=(self.sample.name, "MaterialDatabase.pkl", self.incident_angle, self.cb_ref, self.track_trajectories),
+            initargs=(self.sample.name, self.db_path, self.incident_angle, self.cb_ref, self.track_trajectories),
         ) as pool:
     
             for k, E0 in enumerate(self.energy_array):
