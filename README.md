@@ -25,7 +25,7 @@ pip install git+https://github.com/oridzel/optlib.git
 **Option 2: Clone and install locally (Recommended for development)**
 If you want to edit the code or run the examples:
 ```bash
-git clone [https://github.com/oridzel/optlib.git](https://github.com/oridzel/optlib.git)
+git clone https://github.com/oridzel/optlib.git
 cd optlib
 pip install -e .
 ```
