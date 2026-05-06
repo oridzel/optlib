@@ -22,9 +22,14 @@ def f_lindhard(t):
 
 def g_arr(omega_pl_arr, opt_omega_eV, opt_elf):
     w = np.asarray(omega_pl_arr)
-    w_safe = np.maximum(w, 1e-12)  # avoid divide-by-zero
+    w_safe = np.maximum(w, 1e-12)
     w_eV = (w_safe * h2ev).ravel()
-    interp_vals = np.interp(w_eV, opt_omega_eV, opt_elf).reshape(w.shape)
+    
+    # Force arrays to be strictly 1D to prevent np.interp crashes
+    xp = np.squeeze(opt_omega_eV)
+    fp = np.squeeze(opt_elf)
+    
+    interp_vals = np.interp(w_eV, xp, fp).reshape(w.shape)
     return 2.0 / (math.pi * w_safe) * interp_vals
 
 def q_plus_surface(omega, omega_pl):
@@ -277,7 +282,7 @@ class FPAEngine:
             delayed(_elf_qblock_worker)(
                 k0, k1,
                 self.mat.eloss, q_grid, omega_pl_eV, 
-                self.mat.eloss, self.mat.elf, # Assuming material.elf contains optical limit
+                self.mat.optical_eloss, self.mat.optical_elf,
                 chunk_pl, 1e-14
             )
             for (k0, k1) in tasks
