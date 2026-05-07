@@ -1,24 +1,22 @@
 import os
-import subprocess
 import re
 import numpy as np
 from optlib.constants import a0, gas_z
 from optlib.utils import Error
 
 class ElsepaError(Error):
-    """Exception raised for errors during the ELSEPA subprocess execution."""
     pass
-
 
 class ElsepaWrapper:
     """
-    Wrapper for the ELSEPA (Electron Elastic Scattering cross-sections) Fortran executable.
-    Generates batch input files, runs the subprocess once, and parses the output .dat files
-    to compute elastic and transport mean free paths.
+    Wrapper for parsing ELSEPA (Electron Elastic Scattering) data.
+    Decoupled workflow: 
+    1. write_input_files() -> Generates element-specific lub.in files.
+    2. (User runs ELSEPA manually in those directories).
+    3. parse_output_files() -> Reads the .dat files and computes material properties.
     """
-    def __init__(self, material, elsepa_path='elsepa'):
+    def __init__(self, material):
         self.mat = material
-        self.elsepa_path = elsepa_path
 
     @staticmethod
     def rmuf_from_number_density(n_atoms_cm3: float) -> float:
@@ -30,44 +28,33 @@ class ElsepaWrapper:
         """Extracts the cross-section in a0^2 from ELSEPA output."""
         line = next(l for l in lines if key in l)
         nums = re.findall(r"[-+]?\d+\.\d+E[+-]\d+", line)
-        # ELSEPA prints cm^2 then a0^2; the LAST one is a0^2
         return float(nums[-1])
 
-    def calculate_elastic_properties(self, energy_array, mnucl=3, melec=4, mexch=1, minE=5.0, cleanup=True):
+    def write_input_files(self, energy_array, dest_dir='.', mnucl=3, melec=4, mexch=1, minE=5.0):
         """
-        Batch processes elastic properties over an array of energies.
-        Energies below `minE` are clamped to `minE` (default 5 eV) since ELSEPA 
-        cannot reliably compute cross-sections at extremely low energies.
+        Generates the 'lub.in' files for each element in the material.
+        Creates subdirectories inside `dest_dir` for each element to avoid overwriting.
         """
         if self.mat.atomic_density is None:
-            raise ValueError("Material atomic_density must be set before running ELSEPA.")
+            raise ValueError("Material atomic_density must be set before writing ELSEPA inputs.")
 
-        # 1. Clamp energies and extract UNIQUE values to save Fortran compute time
         energy_array = np.asarray(energy_array)
         used_energy = np.where(energy_array >= minE, energy_array, minE)
         unique_energies = np.unique(used_energy)
         
-        n_energies = len(energy_array)
-        sumweights = 0.0
-
-        # Accumulators for the final grids (mapped back to the full energy array)
-        sigma_el_total = np.zeros(n_energies, dtype=float)
-        sigma_tr_total = np.zeros(n_energies, dtype=float)
-        decs_total = None
-        decs_theta = None
-
         n_atoms_cm3 = self.mat.atomic_density * 1e24
 
         for i, element in enumerate(self.mat.composition.elements):
             atomic_num = self.mat.composition.atomic_numbers[i]
-            weight = self.mat.composition.indices[i]
-            sumweights += weight
-
             is_gas = atomic_num in gas_z
             rmuf_flag = 0 if is_gas else 1
             
-            # 2. Write the batch input file using ONLY UNIQUE energies
-            input_filename = 'lub.in'
+            # Create a dedicated folder for this element (e.g., './elsepa_workspace/Cu')
+            elem_dir = os.path.join(dest_dir, element)
+            os.makedirs(elem_dir, exist_ok=True)
+            
+            input_filename = os.path.join(elem_dir, 'lub.in')
+            
             with open(input_filename, 'w+') as fd:
                 fd.write(f'IZ      {atomic_num}         atomic number                               [none]\n')
                 fd.write(f'MNUCL   {mnucl}         rho_n (1=P, 2=U, 3=F, 4=Uu)                 [  3]\n')
@@ -82,29 +69,48 @@ class ElsepaWrapper:
                 fd.write('IELEC  -1          -1=electron, +1=positron                    [ -1]\n')
                 fd.write(f'MEXCH   {mexch}          V_ex (0=none, 1=FM, 2=TF, 3=RT)             [  1]\n')
                 
-                # Write the unique, clamped energies to ELSEPA
                 for e in unique_energies:  
                     fd.write(f'EV      {e}      kinetic energy (eV)                         [none]\n')
+                    
+        print(f"Generated ELSEPA input files in: {os.path.abspath(dest_dir)}")
 
-            # 3. Run ELSEPA once for this element
-            try:
-                cmd = f"{self.elsepa_path} < {input_filename}"
-                subprocess.run(cmd, shell=True, capture_output=True, text=True, check=True)
-            except subprocess.CalledProcessError as e:
-                raise ElsepaError(f"ELSEPA failed to run. Error: {e.stderr}")
 
-            # 4. Parse the unique output files
+    def parse_output_files(self, energy_array, source_dir='.', minE=5.0):
+        """
+        Parses the 'dcs_*.dat' files generated by ELSEPA from the element subdirectories.
+        Maps the unique computed energies back to the user's original energy array.
+        """
+        if self.mat.atomic_density is None:
+            raise ValueError("Material atomic_density must be set before parsing ELSEPA outputs.")
+
+        energy_array = np.asarray(energy_array)
+        used_energy = np.where(energy_array >= minE, energy_array, minE)
+        unique_energies = np.unique(used_energy)
+        
+        n_energies = len(energy_array)
+        sumweights = 0.0
+
+        sigma_el_total = np.zeros(n_energies, dtype=float)
+        sigma_tr_total = np.zeros(n_energies, dtype=float)
+        decs_total = None
+        decs_theta = None
+
+        for i, element in enumerate(self.mat.composition.elements):
+            weight = self.mat.composition.indices[i]
+            sumweights += weight
+
+            elem_dir = os.path.join(source_dir, element)
+            
             unique_sig_el = {}
             unique_sig_tr = {}
             unique_decs = {}
             
             for ene in unique_energies:
-                # Safely format energy string
                 ene_str = '{:1.3e}'.format(int(np.round(ene))).replace('.', 'p').replace('+0', '0')
-                output_dat = f"dcs_{ene_str}.dat"
+                output_dat = os.path.join(elem_dir, f"dcs_{ene_str}.dat")
 
                 if not os.path.exists(output_dat):
-                    raise ElsepaError(f"ELSEPA output '{output_dat}' not found.")
+                    raise ElsepaError(f"Missing ELSEPA output: '{output_dat}'. Did you run ELSEPA in this folder?")
 
                 with open(output_dat, 'r') as fd:
                     lines = fd.readlines()
@@ -114,25 +120,17 @@ class ElsepaWrapper:
 
                 data = np.loadtxt(output_dat, comments="#")
                 th = np.deg2rad(data[:, 0])
-                de = data[:, 3]  # DECS_A column (a0^2/sr)
+                de = data[:, 3]  # DECS_A column
 
-                # Capture theta grid on the first file read
                 if decs_theta is None:
                     decs_theta = th
                     
-                # Enforce theta consistency if ELSEPA changes grid size
                 if th.shape != decs_theta.shape or np.max(np.abs(th - decs_theta)) > 1e-12:
                     de = np.interp(decs_theta, th, de)
 
                 unique_decs[ene] = de
 
-                if cleanup:
-                    os.remove(output_dat)
-
-            if cleanup:
-                os.remove(input_filename)
-
-            # 5. Map the unique computations back to the full energy array
+            # Map unique results back to the full energy array
             if decs_total is None:
                 decs_total = np.zeros((decs_theta.size, n_energies), dtype=float)
             
@@ -145,7 +143,7 @@ class ElsepaWrapper:
 
             decs_total += element_decs * weight
 
-        # 6. Finalize weighted properties in the Material object
+        # Finalize weighted properties
         self.mat.sigma_el = sigma_el_total / sumweights
         self.mat.sigma_tr = sigma_tr_total / sumweights
 
@@ -155,11 +153,9 @@ class ElsepaWrapper:
         self.mat.decs_theta = decs_theta
         self.mat.decs = decs_total / sumweights
 
-        # Normalize the DECS columns over theta
         norm_factor = np.trapz(self.mat.decs, self.mat.decs_theta, axis=0)
         self.mat.norm_decs = self.mat.decs / np.where(norm_factor > 0, norm_factor, 1.0)
 
-        # Update energy grid tracking
         self.mat.e0_array = used_energy
         self.mat.original_e0_array = energy_array
 
