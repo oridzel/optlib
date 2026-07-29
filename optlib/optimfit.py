@@ -32,7 +32,117 @@ class OptFit:
         self.fit_alpha = fit_alpha
         self.lb = None
         self.ub = None
+
+        # --- Energy-dependent weighting for the ELF objective ---
+        # None = unweighted (original behaviour). Call set_energy_weights()
+        # to emphasize the low-loss/optical region, where a handful of
+        # low-energy oscillators otherwise carry very little influence on
+        # an unweighted sum-of-squares residual dominated by the much
+        # larger high-energy portion of the spectrum.
+        self.elf_weight = None
+
+        # --- Soft Neff(E) regularization (cumulative effective electron count) ---
+        # This is NOT the same as fsum_constraint: fsum_constraint checks the
+        # total (E -> infinity) sum rule as a single number; neff_targets
+        # checks how that oscillator strength is DISTRIBUTED across energy,
+        # which the total sum rule alone cannot see.
+        # Format: list of (e_max, target_neff, weight) tuples, e.g.
+        #   [(3.0, 0.003, 1.0), (5.0, 0.014, 1.0), (6.5, 0.034, 1.0)]
+        # Leave as None / neff_coef=0 to disable (original behaviour).
+        self.neff_targets = None
+        self.neff_coef = 0.0
         
+    # =====================================================================
+    # ENERGY-DEPENDENT WEIGHTING (low-loss/optical emphasis)
+    # =====================================================================
+    def set_energy_weights(self, low_energy_boost=20.0, energy_scale=5.0, weights=None):
+        """
+        Builds an energy-dependent weight array for the ELF residual.
+
+        Default scheme is a smooth exponential boost (not a hard cutoff --
+        a discontinuous step can create a kink in the objective landscape
+        that derivative-free optimizers like COBYLA don't love):
+
+            weight(E) = 1 + (low_energy_boost - 1) * exp(-E / energy_scale)
+
+        At E=0 the weight is `low_energy_boost`; it decays smoothly back to
+        1 by roughly E ~ 3-4x energy_scale. Defaults (boost=20, scale=5 eV)
+        give ~20x weight at E=0, ~7x at 5 eV, ~1x by ~20 eV -- adjust
+        energy_scale to match where your low-energy region of interest ends.
+
+        Pass `weights` directly (same shape as exp_data.x_elf) to override
+        with a fully custom scheme instead.
+        """
+        if weights is not None:
+            self.elf_weight = np.asarray(weights, dtype=float)
+        else:
+            x = self.exp_data.x_elf
+            self.elf_weight = 1.0 + (low_energy_boost - 1.0) * np.exp(-x / energy_scale)
+
+    # =====================================================================
+    # NEFF(E) SOFT REGULARIZATION (cumulative effective electron count)
+    # =====================================================================
+    def _neff_partial(self, material, e_max):
+        """
+        Cumulative Neff(E <= e_max), computed with the SAME formula as
+        DielectricFunction.evaluate_f_sum(), just restricted to a partial
+        energy range and evaluated directly from the oscillator model
+        (no Henke extension -- fine as long as e_max stays well below
+        material.henke_limit, which is true for any optical-range checkpoint).
+
+        This is a genuinely different diagnostic from the total f-sum rule:
+        the total sum rule is one number (integral to infinity); this is a
+        function of e_max that shows HOW oscillator strength accumulates,
+        which is exactly what a single global constraint can't see.
+        """
+        df = DielectricFunction(material)
+        epsilon = df.calculate()
+        elf = np.squeeze((-1 / epsilon).imag)
+        elf = np.atleast_1d(elf)
+        elf[np.isnan(elf)] = 1e-5
+
+        eloss = np.atleast_1d(material.eloss)
+        ind = eloss <= e_max
+        if not np.any(ind):
+            return 0.0
+
+        neff = (1.0 / (2 * math.pi**2 * (material.atomic_density * a0**3))) * np.trapezoid(
+            eloss[ind] / h2ev * elf[ind], eloss[ind] / h2ev
+        )
+        return neff
+
+    def _neff_penalty(self, material):
+        """
+        Soft penalty pulling the model's Neff(E) toward literature/expected
+        checkpoints in self.neff_targets = [(e_max, target, weight), ...].
+        Returned value is added directly to the RMS objective, scaled by
+        self.neff_coef -- treat neff_coef as a regularization strength you
+        tune, not a hard requirement, since the targets themselves usually
+        come from another model's fit to data (e.g. Etchegoin's analytic
+        fit to Johnson & Christy), not an exact theoretical number.
+        """
+        if not self.neff_targets:
+            return 0.0
+        total, wsum = 0.0, 0.0
+        for e_max, target, w in self.neff_targets:
+            neff = self._neff_partial(material, e_max)
+            total += w * (neff - target) ** 2
+            wsum += w
+        return total / wsum if wsum > 0 else 0.0
+
+    # =====================================================================
+    # OPTIONAL: hard nlopt constraint version to enforce a
+    # checkpoint exactly (mirrors the style of fsum_constraint/kksum_constraint
+    # below). Add via opt.add_inequality_constraint(...) in run_optimisation
+    # if you want this instead of / in addition to the soft penalty above.
+    # =====================================================================
+    def neff_constraint(self, osc_vec, grad, e_max, target):
+        material = self.vec2struct(osc_vec)
+        val = np.fabs(self._neff_partial(material, e_max) - target)
+        if grad.size > 0:
+            grad[:] = 0
+        return val
+
     def set_bounds(self):
         osc = self.material.oscillators
         n_osc = len(osc.A)
@@ -124,7 +234,12 @@ class OptFit:
         elf[np.isnan(elf)] = 1e-5
         
         elf_interp = np.interp(self.exp_data.x_elf, material.eloss, elf)
-        rms = np.sum((self.exp_data.y_elf - elf_interp)**2) / self.exp_data.x_elf.size
+
+        w = self.elf_weight if self.elf_weight is not None else np.ones_like(self.exp_data.x_elf)
+        rms = np.sum(w * (self.exp_data.y_elf - elf_interp)**2) / np.sum(w)
+
+        if self.neff_coef > 0:
+            rms += self.neff_coef * self._neff_penalty(material)
 
         if grad.size > 0:
             grad[:] = 0
@@ -151,8 +266,14 @@ class OptFit:
         ind_ndiimfp = self.exp_data.y_ndiimfp > 0
         ind_elf = self.exp_data.y_elf > 0
 
+        w_full = self.elf_weight if self.elf_weight is not None else np.ones_like(self.exp_data.x_elf)
+        w = w_full[ind_elf]
+
         rms = (self.diimfp_coef * np.sum((self.exp_data.y_ndiimfp[ind_ndiimfp] - diimfp_interp[ind_ndiimfp])**2) / np.sum(ind_ndiimfp) + 
-               self.elf_coef * np.sum((self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])**2) / np.sum(ind_elf))
+               self.elf_coef * np.sum(w * (self.exp_data.y_elf[ind_elf] - elf_interp[ind_elf])**2) / np.sum(w))
+
+        if self.neff_coef > 0:
+            rms += self.neff_coef * self._neff_penalty(material)
         
         if grad.size > 0:
             grad[:] = 0
@@ -228,7 +349,7 @@ class OptFit:
             
             # Pre-calculate once
             self.material.electron_density_henke = (self.material.atomic_density * self.material.Z * a0**3 - 
-                1 / (2 * math.pi**2) * np.trapz(self.material.eloss_henke / h2ev * self.material.elf_henke, self.material.eloss_henke / h2ev))
+                1 / (2 * math.pi**2) * np.trapezoid(self.material.eloss_henke / h2ev * self.material.elf_henke, self.material.eloss_henke / h2ev))
 
         # Add Constraints
         opt.add_inequality_constraint(self.fsum_constraint)
