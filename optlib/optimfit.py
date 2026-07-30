@@ -51,6 +51,19 @@ class OptFit:
         # Leave as None / neff_coef=0 to disable (original behaviour).
         self.neff_targets = None
         self.neff_coef = 0.0
+
+        # --- Soft optical-constant anchoring (eps1(E), eps2(E) directly) ---
+        # This is the more load-bearing check of the two: Neff(E) only sees
+        # the INTEGRATED area under E*ELF(E), so a broadened-but-weaker
+        # oscillator can match a Neff target while still killing the actual
+        # eps1 depth (this is exactly what happened in testing -- Neff(E)
+        # improved while the LSPR vanished, traced to a systematic ~1.5x
+        # increase in oscillator damping). Anchoring eps1/eps2 directly at a
+        # few checkpoint energies constrains lineshape sharpness, not just
+        # enclosed area, and catches that failure mode immediately.
+        # Format: list of (E, eps1_target, eps2_target, weight) tuples.
+        self.optical_targets = None
+        self.optical_coef = 0.0
         
     # =====================================================================
     # ENERGY-DEPENDENT WEIGHTING (low-loss/optical emphasis)
@@ -131,7 +144,40 @@ class OptFit:
         return total / wsum if wsum > 0 else 0.0
 
     # =====================================================================
-    # OPTIONAL: hard nlopt constraint version to enforce a
+    # OPTICAL-CONSTANT ANCHORING (direct eps1(E), eps2(E) matching)
+    # =====================================================================
+    def _optical_penalty(self, eloss, epsilon):
+        """
+        Soft penalty pulling the model's eps1(E), eps2(E) directly toward
+        reference optical constants (e.g. literature Johnson & Christy, or
+        your own ellipsometry) at specific checkpoint energies.
+
+        Pass the eloss/epsilon ALREADY COMPUTED by the calling objective
+        function (don't recompute DielectricFunction again here -- that's
+        wasted work, unlike the Neff helper above which needs its own call
+        since it integrates over a different, wider energy range).
+
+        self.optical_targets: list of (E, eps1_target, eps2_target, weight).
+        """
+        if not self.optical_targets:
+            return 0.0
+
+        eloss = np.atleast_1d(eloss)
+        eps1 = np.atleast_1d(np.squeeze(epsilon.real))
+        eps2 = np.atleast_1d(np.squeeze(epsilon.imag))
+
+        targets_E = [t[0] for t in self.optical_targets]
+        eps1_interp = np.interp(targets_E, eloss, eps1)
+        eps2_interp = np.interp(targets_E, eloss, eps2)
+
+        total, wsum = 0.0, 0.0
+        for (E, eps1_t, eps2_t, w), e1i, e2i in zip(self.optical_targets, eps1_interp, eps2_interp):
+            total += w * ((e1i - eps1_t) ** 2 + (e2i - eps2_t) ** 2)
+            wsum += w
+        return total / wsum if wsum > 0 else 0.0
+
+    # =====================================================================
+    # OPTIONAL: hard nlopt constraint version, if you'd rather enforce a
     # checkpoint exactly (mirrors the style of fsum_constraint/kksum_constraint
     # below). Add via opt.add_inequality_constraint(...) in run_optimisation
     # if you want this instead of / in addition to the soft penalty above.
@@ -241,6 +287,9 @@ class OptFit:
         if self.neff_coef > 0:
             rms += self.neff_coef * self._neff_penalty(material)
 
+        if self.optical_coef > 0:
+            rms += self.optical_coef * self._optical_penalty(material.eloss, epsilon)
+
         if grad.size > 0:
             grad[:] = 0
 
@@ -274,6 +323,9 @@ class OptFit:
 
         if self.neff_coef > 0:
             rms += self.neff_coef * self._neff_penalty(material)
+
+        if self.optical_coef > 0:
+            rms += self.optical_coef * self._optical_penalty(material.eloss, epsilon)
         
         if grad.size > 0:
             grad[:] = 0
