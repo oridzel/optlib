@@ -371,6 +371,7 @@ class OptFit:
         
         self.set_bounds()
         x0 = self.struct2vec(self.material)
+        x0 = np.clip(x0, self.lb, self.ub)      # <-- nlopt rejects out-of-bounds x0
         n_params = len(x0)
 
         # Setup local optimizer (COBYLA is derivative-free, great for this)
