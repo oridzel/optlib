@@ -197,7 +197,7 @@ class OptFit:
         osc_min_gamma = np.ones(n_osc) * 0.025
         # interband edges are broad; forbid sharp low-energy resonances
         low_e = np.array(osc.omega) < 10.0
-        osc_min_gamma[low_e] = 1.5
+        osc_min_gamma[low_e] = 0.8
         osc_min_omega = np.ones(n_osc) * self.material.e_gap
         
         if osc.model == 'Drude':
