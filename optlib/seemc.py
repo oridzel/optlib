@@ -1,1313 +1,1601 @@
-import numpy as np
-from optlib.constants import *
-import pickle
-from scipy import integrate
-from scipy.interpolate import RectBivariateSpline
-import random
-import matplotlib.pyplot as plt
-import time
-import plotly.graph_objects as go
-from tqdm import tqdm
-import multiprocessing
-from types import SimpleNamespace
-import gc
+"""
+seemc.py -- Monte Carlo simulation of secondary electron emission in solids.
+
+Part of `optlib`.  Reads a material database produced by the optlib DB builder
+and transports electrons through a semi-infinite solid occupying z > 0, with
+vacuum at z < 0.
+
+=============================================================================
+ENERGY CONVENTIONS  --  READ THIS BEFORE TOUCHING ANY TABLE LOOKUP
+=============================================================================
+Three different energy references appear in this code.  Mixing them up is the
+single easiest way to get a wrong answer, so every table lookup goes through a
+named converter in `Sample` and never touches `material_data` directly.
+
+    E_s     "solid" energy, measured from the BOTTOM OF THE VALENCE BAND.
+            This is the state variable carried by `Electron.energy` while the
+            electron is inside the solid.  It equals T' in Shinotsuka et al.,
+            Surf. Interface Anal. 47 (2015) 871, Eq. (2).
+
+    T       = E_s - E_F, measured from the FERMI LEVEL.  This is the abscissa
+            of the standard IMFP tables (Shinotsuka Table 2: "electron kinetic
+            energy T with respect to the Fermi level").
+
+    E_vac   = E_s - U_i  with  U_i = E_F + phi,  the kinetic energy the
+            electron would have in vacuum.  This is the abscissa of ELSEPA
+            elastic tables: ELSEPA is fed a vacuum kinetic energy, and the
+            solid-state optical-model potential is flat (= -Delta_E) outside
+            the muffin-tin sphere, so the inner potential is folded into the
+            potential rather than into the energy argument
+            (Salvat/Jablonski/Powell, "Atoms in solids" note, Eqs. 7-8).
+
+Which reference each DB table uses is declared once, in `MCConfig`:
+
+    imfp_energy_ref  : 'vb_bottom' (default, matches the optlib FPA builder)
+                       or 'fermi'  (matches the published Shinotsuka tables)
+    emfp_energy_ref  : 'vacuum'    (default, matches ELSEPA)
+
+KINEMATIC INVARIANTS (Shinotsuka Eq. 2-3) -- these are asserted, not assumed:
+
+    omega_max = T' - E_F = E_s - E_F        (maximum energy loss)
+    q_bounds  are evaluated at T' = E_s     (NOT at E_s - E_F)
+
+The relativistic momenta used for the q-bounds are also used for the
+projectile deflection, so the sampled q is guaranteed to lie in
+[|k - k'|, k + k'] and the law-of-cosines never needs clamping.
+
+=============================================================================
+CHANGELOG vs. the previous version
+=============================================================================
+Physics / correctness
+  1. A truncated step at the surface no longer forces a scattering event.
+     Previously every internal reflection was followed by a collision that the
+     exponential never generated, piling up spurious energy loss in exactly
+     the depth range that controls SEY.
+  2. Secondary-electron direction is now built from the momentum transfer q
+     (rotated out of the frame with z || q) instead of the ad-hoc rule
+     [pi - theta, phi + pi] applied to the *already deflected* projectile
+     direction.  Energy and momentum of the (projectile, SE) pair are now
+     consistent by construction.
+  3. `energy_se` can no longer leak from a previous collision: `scatter()`
+     returns an explicit result object instead of mutating shared state.
+  4. Rejected inelastic samples no longer silently become null collisions.
+     omega is drawn from a CDF truncated at omega_max, and q from a grid built
+     inside [q-, q+], so a valid event is produced every time.  The residual
+     failure modes are counted in `diagnostics`.
+  5. q-bounds evaluated at E_s (was E_s - E_F).  See above.
+  6. Projectile deflection uses relativistic momenta, consistent with the
+     q-bounds.
+  7. The incident beam is refracted at the surface barrier (parallel momentum
+     conserved), instead of keeping its vacuum direction.
+  8. Energy-bin lookup is stochastically interpolated between adjacent bins
+     instead of snapping to the nearest bin.
+  9. Unconditional death check at the top of the transport loop plus a step
+     counter, so a sub-barrier electron in a non-metal cannot loop forever.
+ 10. Contradictory q-unit handling removed: the DB's 'q' grid has one declared
+     unit (`MCConfig.q_unit`), validated at load time.
+
+Bookkeeping
+ 11. Emitted electrons are classified both by cascade flag and by the
+     conventional 50 eV cut, so results are comparable to measured
+     delta / eta curves and to MAST-SEY.
+ 12. Per-energy statistical uncertainties (standard error of the mean).
+ 13. Emission energy and angle spectra are collected.
+ 14. One shared trajectory implementation for serial and parallel runs.
+ 15. Reproducible seeding via numpy SeedSequence (no PID dependence).
+"""
+
+from __future__ import annotations
+
 import math
 import os
-from types import SimpleNamespace
+import pickle
+from dataclasses import dataclass, field
+from typing import Optional, Tuple
 
-_G = None  # worker-global namespace
+import numpy as np
+from scipy.interpolate import RectBivariateSpline
 
+# --------------------------------------------------------------------------
+# Constants.  Defined locally so the module is self-contained and testable,
+# then cross-checked against optlib.constants if that is importable.  The old
+# code did `from optlib.constants import *` and *also* defined
+# HBAR2_2M_eVA2 further down the file, so which value won depended on file
+# order -- exactly the kind of thing that silently poisons a q conversion.
+# --------------------------------------------------------------------------
+H2EV = 27.211386245988          # Hartree -> eV
+A0_ANG = 0.529177210903         # Bohr radius in Angstrom
+HBAR2_2M_EVA2 = 0.5 * H2EV * A0_ANG ** 2   # hbar^2/2m in eV*Angstrom^2 (3.80998)
+C_AU = 137.035999084            # speed of light in atomic units
+
+# Backwards-compatible aliases (old code referenced these names)
+h2ev = H2EV
+a0 = A0_ANG
+HBAR2_2M_eVA2 = HBAR2_2M_EVA2
+
+try:  # pragma: no cover - depends on installation
+    from optlib import constants as _optlib_constants
+
+    for _name, _local in (("h2ev", H2EV), ("a0", A0_ANG)):
+        _ref = getattr(_optlib_constants, _name, None)
+        if _ref is not None and not math.isclose(float(_ref), _local, rel_tol=1e-6):
+            raise ValueError(
+                f"optlib.constants.{_name} = {_ref} disagrees with seemc's "
+                f"{_local}. Unit conventions must match; refusing to guess."
+            )
+except ImportError:
+    pass
+
+
+# --------------------------------------------------------------------------
+# Configuration
+# --------------------------------------------------------------------------
+@dataclass
+class MCConfig:
+    """Everything that used to be a magic number or an implicit assumption."""
+
+    # --- table energy references (see module docstring) ---
+    imfp_energy_ref: str = "vb_bottom"   # 'vb_bottom' (E_s) or 'fermi' (E_s - E_F)
+    emfp_energy_ref: str = "vacuum"      # 'vacuum' (E_s - U_i) or 'vb_bottom'
+
+    # --- units of material_data['q'] ---
+    q_unit: str = "a0^-1"                # 'a0^-1' or 'A^-1'
+
+    # --- elastic ---
+    elastic_min_energy: float = 5.0      # ELSEPA tables clamped below this (eV, vacuum ref)
+
+    # --- secondary electron generation ---
+    # 'momentum' : SE direction from k_f = k_i + q, rotated out of the q frame.
+    # 'isotropic': SE emitted isotropically (debug / comparison only).
+    se_direction_model: str = "momentum"
+    # Plasmon decay is a Landau-damping event at q ~ q_c that is uncorrelated
+    # with the incident direction; isotropic is the standard choice
+    # (Ding & Shimizu).  'momentum' reuses the binary-encounter construction.
+    plasmon_se_direction: str = "isotropic"
+
+    # --- termination ---
+    # An electron with E_s <= U_i can never escape through a step barrier and
+    # cannot gain energy, so tracking it only costs time.  Set True if you add
+    # phonon transport or want energy-deposition maps.
+    track_subbarrier: bool = False
+    max_steps_per_electron: int = 100_000
+    max_generation: int = 100
+    max_secondaries_per_trajectory: int = 100_000
+
+    # --- classification ---
+    bse_cutoff_ev: float = 50.0          # conventional SE/BSE split on emission energy
+
+    # --- sampling resolution ---
+    n_q_sample: int = 64                 # points used to build the conditional q CDF
+    n_theta_dcs: int = 0                 # 0 = use the DB's native theta grid
+
+    # --- diagnostics ---
+    collect_spectra: bool = True
+
+    def validate(self) -> None:
+        if self.imfp_energy_ref not in ("vb_bottom", "fermi"):
+            raise ValueError(f"bad imfp_energy_ref: {self.imfp_energy_ref}")
+        if self.emfp_energy_ref not in ("vacuum", "vb_bottom"):
+            raise ValueError(f"bad emfp_energy_ref: {self.emfp_energy_ref}")
+        if self.q_unit not in ("a0^-1", "A^-1"):
+            raise ValueError(f"bad q_unit: {self.q_unit}")
+        if self.se_direction_model not in ("momentum", "isotropic"):
+            raise ValueError(f"bad se_direction_model: {self.se_direction_model}")
+        if self.plasmon_se_direction not in ("momentum", "isotropic"):
+            raise ValueError(f"bad plasmon_se_direction: {self.plasmon_se_direction}")
+
+
+# --------------------------------------------------------------------------
+# Small numerical helpers
+# --------------------------------------------------------------------------
 def cumtrapz_numpy(y, x):
-    """Cumulative trapezoid integral, same length as x (initial=0)."""
+    """Cumulative trapezoid integral, same length as x, starting at 0."""
     y = np.asarray(y, dtype=float)
     x = np.asarray(x, dtype=float)
-    dx = np.diff(x)
-    area = 0.5 * (y[1:] + y[:-1]) * dx
+    area = 0.5 * (y[1:] + y[:-1]) * np.diff(x)
     return np.concatenate(([0.0], np.cumsum(area)))
 
 
-def _init_worker(sample_name, db_path, incident_angle, cb_ref, track_trajectories):
+def _invert_cdf(cdf, x, u):
     """
-    Runs once per worker process. Keeps heavy objects (Sample tables, splines, etc.)
-    local to the process so nothing big gets pickled per task.
-    """
-    global _G
-    sample = Sample(sample_name, db_path=db_path)
+    Invert a monotonically non-decreasing CDF by linear interpolation.
 
-    _G = SimpleNamespace(
-        sample=sample,
-        incident_angle=float(incident_angle),
-        cb_ref=bool(cb_ref),
-        track=bool(track_trajectories),
+    Unlike np.interp(u, cdf, x) this is safe when the CDF has flat regions
+    (zero-probability gaps in the ELF), which np.interp resolves arbitrarily.
+
+    Uses the ndarray.searchsorted method rather than np.searchsorted: the
+    module-level function goes through numpy's dispatch wrapper, which
+    dominates the runtime when it is called a few hundred times per
+    trajectory on scalars.
+    """
+    j = int(cdf.searchsorted(u, side="right")) - 1
+    n2 = len(x) - 2
+    j = 0 if j < 0 else (n2 if j > n2 else j)
+    c0, c1 = float(cdf[j]), float(cdf[j + 1])
+    if c1 <= c0:
+        return float(x[j])
+    t = (u - c0) / (c1 - c0)
+    return float(x[j] + t * (x[j + 1] - x[j]))
+
+
+def _bin_and_fraction(grid, value):
+    """Return (i, t) with grid[i] <= value <= grid[i+1] and t the fraction."""
+    n = len(grid)
+    if n < 2:
+        return 0, 0.0
+    lo, hi = grid[0], grid[-1]
+    v = lo if value < lo else (hi if value > hi else float(value))
+    i = int(grid.searchsorted(v, side="right")) - 1
+    n2 = n - 2
+    i = 0 if i < 0 else (n2 if i > n2 else i)
+    span = grid[i + 1] - grid[i]
+    t = 0.0 if span <= 0 else (v - grid[i]) / span
+    return i, float(np.clip(t, 0.0, 1.0))
+
+
+def _k_rel_au(E_ev):
+    """
+    Relativistic electron momentum in atomic units (a0^-1) for energy E_ev.
+
+        k = sqrt(E (2 + E/c^2))     [Hartree atomic units]
+
+    Same expression as Shinotsuka Eq. (2); used for BOTH the q-bounds and the
+    projectile deflection so the two can never disagree.
+    """
+    e = max(float(E_ev), 0.0) / H2EV
+    return math.sqrt(e * (2.0 + e / (C_AU ** 2)))
+
+
+def _isotropic_direction(rng):
+    cos_t = 2.0 * rng.random() - 1.0
+    sin_t = math.sqrt(max(1.0 - cos_t * cos_t, 0.0))
+    phi = 2.0 * math.pi * rng.random()
+    return [sin_t * math.cos(phi), sin_t * math.sin(phi), cos_t]
+
+
+def rotate_direction(uvw, polar, azimuth):
+    """
+    Rotate the unit vector `uvw` by `polar` away from its own axis and
+    `azimuth` about it.  (Unchanged from the original `change_direction`,
+    which was correct, including the uvw ~ +/-z degenerate case.)
+    """
+    sin_psi = math.sin(polar)
+    cos_psi = math.cos(polar)
+    sin_fi = math.sin(azimuth)
+    cos_fi = math.cos(azimuth)
+
+    cos_theta = uvw[2]
+    sin_theta = math.sqrt(max(uvw[0] ** 2 + uvw[1] ** 2, 0.0))
+    if sin_theta > 1e-12:
+        cos_phi = uvw[0] / sin_theta
+        sin_phi = uvw[1] / sin_theta
+    else:
+        cos_phi, sin_phi = 1.0, 0.0
+
+    h0 = sin_psi * cos_fi
+    h1 = sin_theta * cos_psi + h0 * cos_theta
+    h2 = sin_psi * sin_fi
+
+    out = [
+        h1 * cos_phi - h2 * sin_phi,
+        h1 * sin_phi + h2 * cos_phi,
+        cos_theta * cos_psi - h0 * sin_theta,
+    ]
+    norm = math.sqrt(out[0] ** 2 + out[1] ** 2 + out[2] ** 2)
+    if norm > 0:
+        out = [v / norm for v in out]
+    return out
+
+
+class Diagnostics(dict):
+    """Counter bag.  Every silent fallback in the physics increments one."""
+
+    _KEYS = (
+        "inelastic_events",
+        "elastic_events",
+        "surface_encounters",
+        "escapes",
+        "internal_reflections",
+        "se_created",
+        "se_blocked_pauli",       # FEG kinematics forbade a target state
+        "se_below_barrier",       # SE created but cannot escape -> not tracked
+        "omega_cdf_empty",        # energy bin had no inelastic strength
+        "q_window_clipped",       # [q-, q+] extended past the tabulated q grid
+        "q_cdf_empty",            # ELF integrated to zero inside [q-, q+]
+        "step_limit_hit",
+        "generation_limit_hit",
     )
 
+    def __init__(self):
+        super().__init__({k: 0 for k in self._KEYS})
 
-def _run_one_trajectory_worker(args):
-    """
-    Worker task: run a single trajectory for a given primary energy.
-    args = (E0, traj_id, seed_base)
-    Returns: (tey, sey, bse, tracks_or_None)
-    """
-    global _G
-    E0, traj_id, seed_base = args
+    def add(self, other):
+        for k, v in other.items():
+            self[k] = self.get(k, 0) + v
 
-    # robust per-task seed (also unique across processes)
-    # seed_base should already encode energy index / energy value
-    seed = (seed_base + 1_000_003 * (os.getpid() & 0xFFFF) + int(traj_id)) & 0xFFFFFFFF
-    rng = np.random.default_rng(seed)
+    def report(self, n_trajectories=None):
+        lines = ["Diagnostics:"]
+        for k in sorted(self):
+            v = self[k]
+            if n_trajectories:
+                lines.append(f"  {k:<24s} {v:>12d}   ({v / n_trajectories:.4g}/traj)")
+            else:
+                lines.append(f"  {k:<24s} {v:>12d}")
+        return "\n".join(lines)
 
-    sample = _G.sample
 
-    tey = 0
-    sey = 0
-    bse = 0
-
-    electrons = []
-    E_s0 = float(E0) + sample.Ui
-
-    electrons.append(
-        Electron(
-            sample, E_s0, _G.cb_ref, _G.track,
-            xyz=[0.0, 0.0, 0.0],
-            uvw=[math.sin(_G.incident_angle), 0.0, math.cos(_G.incident_angle)],
-            gen=0, se=False, ind=-1, rng=rng
-        )
-    )
-
-    traj_tracks = []
-
-    i = 0
-    while i < len(electrons):
-        e = electrons[i]
-
-        while e.inside and (not e.dead):
-
-            e.travel()
-            if e.dead:
-                break
-
-            if e.escape():
-                tey += 1
-                if e.is_secondary:
-                    sey += 1
-                else:
-                    bse += 1
-                break
-
-            e.get_scattering_type()
-            if e.dead:
-                break
-
-            made_inelastic = e.scatter()
-
-            if made_inelastic and e.energy_se > 0.0:
-                se_energy = e.energy_loss + e.energy_se
-
-                if sample.is_metal and se_energy <= e.Ui:
-                    pass
-                else:
-                    se_defl = [math.pi - e.deflection[0],
-                               (e.deflection[1] + math.pi) % (2 * math.pi)]
-                    se_uvw = e.change_direction(e.uvw, se_defl)
-                    se_xyz = e.xyz.copy()
-                    electrons.append(
-                        Electron(
-                            sample, se_energy, _G.cb_ref, _G.track,
-                            xyz=se_xyz, uvw=se_uvw, gen=e.generation + 1, se=True, ind=i, rng=rng
-                        )
-                    )
-
-        if _G.track:
-            traj_tracks.append(e.coordinates)
-
-        electrons[i] = None
-        i += 1
-
-    return tey, sey, bse, (traj_tracks if _G.track else None)
-    
-
+# --------------------------------------------------------------------------
+# Sample
+# --------------------------------------------------------------------------
 class Sample:
-    T = 300  # K
-    k_B = 8.617e-5  # eV/K
+    """Material tables plus every sampling routine that depends only on them."""
 
-    def __init__(self, name, db_path='MaterialDatabase.pkl'):
-        import pickle
-        with open(db_path, 'rb') as fp:
+    def __init__(self, name, db_path="MaterialDatabase.pkl", config: Optional[MCConfig] = None):
+        self.cfg = config or MCConfig()
+        self.cfg.validate()
+
+        with open(db_path, "rb") as fp:
             data = pickle.load(fp)
 
-        # Support dict (single material) or list[dict]
         if isinstance(data, dict):
-            if data.get('name') != name:
-                raise ValueError(f"DB has '{data.get('name')}', requested '{name}'")
+            if data.get("name") != name:
+                raise ValueError(f"DB holds '{data.get('name')}', requested '{name}'")
             self.material_data = data
         elif isinstance(data, list):
-            names = [d.get('name') for d in data]
+            names = [d.get("name") for d in data]
             if name not in names:
                 raise ValueError(f"Allowed sample names are {names}")
-            self.material_data = next(d for d in data if d.get('name') == name)
+            self.material_data = next(d for d in data if d.get("name") == name)
         else:
             raise ValueError("Unrecognized MaterialDatabase.pkl format")
 
-        self.name = self.material_data['name']
-        self.is_metal = bool(self.material_data['is_metal'])
+        md = self.material_data
+        self.name = md["name"]
+        self.is_metal = bool(md["is_metal"])
 
-        # Energy grid for tables
-        self.Egrid = np.asarray(self.material_data['energy'], dtype=float)
+        self.Egrid = np.asarray(md["energy"], dtype=float)
+        if not np.all(np.diff(self.Egrid) > 0):
+            raise ValueError("material_data['energy'] must be strictly increasing")
         self.Emin = float(self.Egrid[0])
         self.Emax = float(self.Egrid[-1])
 
-        # Elastic clamp (you built elastic below 5 eV by using ~5 eV)
-        self.elastic_min_energy = 5.0
+        self.e_fermi = float(md.get("e_fermi", 0.0))
+        self.work_function = float(md.get("work_function", 0.0))
+        self.Ui = self.e_fermi + self.work_function     # VB bottom -> vacuum level
+        self.e_vb = float(md.get("e_vb", 0.0))
 
-        # Caches
-        self._elastic_theta_cdf_cache = {}   # ind -> (theta, cdf)
-        self._inelastic_eloss_cdf_cache = {} # ind -> (eloss, cdf)
-        self._elf_spline = None              # RectBivariateSpline for ELF
-        self._dos_cdf_cache = None           # (ener_grid, cdf) for DOS sampling
-        self._precompute_inelastic_cdfs()
+        self.imfp_table = np.asarray(md["imfp"], dtype=float)
+        self.emfp_table = np.asarray(md["emfp"], dtype=float)
+        # Interpolate the inverse MFPs directly: they are what the transport
+        # needs, and this avoids a division per step plus the 1/0 guards.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            self.inv_imfp_table = np.where(self.imfp_table > 0, 1.0 / self.imfp_table, 0.0)
+            self.inv_emfp_table = np.where(self.emfp_table > 0, 1.0 / self.emfp_table, 0.0)
+        self.inv_imfp_table[~np.isfinite(self.inv_imfp_table)] = 0.0
+        self.inv_emfp_table[~np.isfinite(self.inv_emfp_table)] = 0.0
+        self._check_table_shapes()
+
         self._precompute_elastic_cdfs()
-        self._theta_i = np.linspace(0.0, math.pi/2.0, 180)
-        self._sin_theta_i = np.sin(self._theta_i)
-        self.e_fermi = float(self.material_data.get("e_fermi", 0.0))
-        self.work_function = float(self.material_data.get("work_function", 0.0))
-        self.Ui = self.e_fermi + self.work_function
-        
-        # --- Channel-resolved inelastic sampler (uses diimfp_pl/se(q,omega)) ---
-        # self._inel_sampler = InelasticChannelSampler(self.material_data)
-
-        # ---Precompute ω-CDFs per energy bin per channel (fast) ---
         self._precompute_inelastic_channel_cdfs()
+        self._build_elf_channel_splines()
 
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+    def _check_table_shapes(self):
+        n = self.Egrid.size
+        for key in ("imfp", "emfp", "inv_imfp_pl", "inv_imfp_se"):
+            arr = np.asarray(self.material_data[key], dtype=float)
+            if arr.shape != (n,):
+                raise ValueError(f"material_data['{key}'] has shape {arr.shape}, expected ({n},)")
 
-    # ---------- safe interpolation helpers ----------
+        decs = np.asarray(self.material_data["decs"], dtype=float)
+        theta = np.asarray(self.material_data["decs_theta"], dtype=float)
+        if decs.shape != (theta.size, n):
+            raise ValueError(
+                f"decs has shape {decs.shape}, expected ({theta.size}, {n}); the elastic "
+                "tables must share the 'energy' grid"
+            )
+
+        for key in ("diimfp_se", "diimfp_pl"):
+            arr = np.asarray(self.material_data[key], dtype=float)
+            if arr.ndim != 3 or arr.shape[1] != 2 or arr.shape[2] != n:
+                raise ValueError(
+                    f"material_data['{key}'] has shape {arr.shape}, expected (Nw, 2, {n})"
+                )
+
+    def consistency_report(self):
+        """
+        Cross-checks worth running once per material.  These catch the class of
+        bug that produces a plausible-looking but wrong SEY curve.
+        """
+        md = self.material_data
+        lines = [f"Consistency report for {self.name}", "-" * 46]
+
+        inv_tot = np.asarray(md["inv_imfp_pl"], float) + np.asarray(md["inv_imfp_se"], float)
+        # Only bins that carry inelastic strength are meaningful: below E_F + the
+        # smallest excitation there is nothing to compare.
+        live = inv_tot > 0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rel = np.abs(inv_tot[live] * self.imfp_table[live] - 1.0)
+        rel = rel[np.isfinite(rel)]
+        worst = float(np.max(rel)) if rel.size else float("nan")
+        lines.append(
+            f"  1/imfp vs (inv_imfp_pl + inv_imfp_se): max rel. deviation {worst:.3%}"
+        )
+        if worst > 0.02:
+            lines.append(
+                "     WARNING: the transport rate and the channel decomposition disagree. "
+                "The channel branching will not reproduce the tabulated IMFP."
+            )
+
+        q = np.asarray(md["q"], float)
+        lines.append(
+            f"  q grid: [{q.min():.4g}, {q.max():.4g}] declared as {self.cfg.q_unit}"
+        )
+        # A physically sensible grid must span the momentum transfers that the
+        # kinematics actually demand at the top of the energy range.
+        k_top = _k_rel_au(self.Emax)
+        q_top = 2.0 * k_top if self.cfg.q_unit == "a0^-1" else 2.0 * k_top / A0_ANG
+        if q.max() < 0.5 * q_top:
+            lines.append(
+                f"     WARNING: q_max = {q.max():.4g} is far below the 2k = {q_top:.4g} "
+                f"required at E = {self.Emax:.4g} eV. Check q_unit."
+            )
+
+        lines.append(f"  E_F = {self.e_fermi:.3f} eV, phi = {self.work_function:.3f} eV, "
+                     f"U_i = {self.Ui:.3f} eV")
+        lines.append(f"  IMFP tabulated vs '{self.cfg.imfp_energy_ref}', "
+                     f"EMFP vs '{self.cfg.emfp_energy_ref}'")
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Energy reference conversions -- the ONLY places a reference is applied
+    # ------------------------------------------------------------------
+    def E_fermi_ref(self, E_s):
+        return E_s - self.e_fermi
+
+    def E_vacuum_ref(self, E_s):
+        return E_s - self.Ui
+
+    def _imfp_abscissa(self, E_s):
+        return E_s if self.cfg.imfp_energy_ref == "vb_bottom" else self.E_fermi_ref(E_s)
+
+    def _emfp_abscissa(self, E_s):
+        if self.cfg.emfp_energy_ref == "vacuum":
+            # ELSEPA is tabulated against vacuum kinetic energy; below the
+            # tabulated minimum the DCS is frozen at elastic_min_energy.
+            return max(self.E_vacuum_ref(E_s), self.cfg.elastic_min_energy)
+        return E_s
+
     def _clip_E(self, E):
-        return float(np.clip(E, self.Emin, self.Emax))
+        # Plain comparisons: np.clip on a scalar costs ~8 us of dispatch
+        # overhead and this is the single hottest call in the transport loop.
+        if E < self.Emin:
+            return self.Emin
+        if E > self.Emax:
+            return self.Emax
+        return float(E)
 
-    def get_imfp(self, E):
-        E = self._clip_E(E)
-        return float(np.interp(E, self.Egrid, self.material_data['imfp']))
+    # ------------------------------------------------------------------
+    # Mean free paths
+    # ------------------------------------------------------------------
+    def get_imfp(self, E_s):
+        E = self._clip_E(self._imfp_abscissa(E_s))
+        return float(np.interp(E, self.Egrid, self.imfp_table))
 
-    # def get_emfp(self, E):
-    #     # apply elastic clamp before querying elastic tables
-    #     E = max(E, self.elastic_min_energy)
-    #     E = self._clip_E(E)
-    #     return float(np.interp(E, self.Egrid, self.material_data['emfp']))
+    def get_emfp(self, E_s):
+        E = self._clip_E(self._emfp_abscissa(E_s))
+        return float(np.interp(E, self.Egrid, self.emfp_table))
 
-    def get_emfp(self, E_solid):
-        # Convert solid energy (VB bottom ref) -> vacuum kinetic energy
-        E_vac = E_solid - self.Ui   
-        E_vac = max(E_vac, self.elastic_min_energy)    
-        E_vac = self._clip_E(E_vac)
-        return float(np.interp(E_vac, self.Egrid, self.material_data["emfp"]))
+    def inverse_mfps(self, E_s):
+        """(1/emfp, 1/imfp) at E_s.  Evaluated once per transport step."""
+        inv_e = float(np.interp(self._clip_E(self._emfp_abscissa(E_s)),
+                                self.Egrid, self.inv_emfp_table))
+        if self.is_metal and E_s <= self.e_fermi:
+            inv_i = 0.0            # no inelastic channel below E_F
+        else:
+            inv_i = float(np.interp(self._clip_E(self._imfp_abscissa(E_s)),
+                                    self.Egrid, self.inv_imfp_table))
+        return inv_e, inv_i
 
-    # ---------- fast binning ----------
-    def energy_index(self, E):
-        """Nearest-neighbor bin using searchsorted (fast, stable)."""
-        E = self._clip_E(E)
-        i = int(np.searchsorted(self.Egrid, E, side='left'))
-        if i <= 0:
-            return 0
-        if i >= len(self.Egrid):
-            return len(self.Egrid) - 1
-        # pick closer of i-1 and i
-        return i if (self.Egrid[i] - E) < (E - self.Egrid[i-1]) else (i - 1)
+    def omega_max(self, E_s):
+        """Shinotsuka Eq. (3): omega_max = T' - E_F for a metal."""
+        return E_s - self.e_fermi if self.is_metal else E_s
 
-    # ---------- CDF caches ----------
-    def get_elastic_theta_cdf(self, ind):
-        ind = int(ind)
-        return self._elastic_theta, self._elastic_cdf_all[:, ind]
-
-
-    def get_inelastic_eloss_cdf(self, ind):
-        ind = int(ind)
-        if not self._inel_has[ind]:
-            # still return an eloss grid for shape consistency
-            return self._inel_eloss_all[:, ind], None
-        return self._inel_eloss_all[:, ind], self._inel_cdf_all[:, ind]
-
-
-    # ---------- ELF spline (build once) ----------
-    def elf_spline(self):
-        if self._elf_spline is None:
-            omega_h = np.asarray(self.material_data['omega'], dtype=float) / h2ev
-            q_a0    = np.asarray(self.material_data['q'], dtype=float) * a0
-            elf     = np.asarray(self.material_data['elf'], dtype=float)
-            self._elf_spline = RectBivariateSpline(omega_h, q_a0, elf)
-        return self._elf_spline
-
-    # ---------- inelastic angular distribution ----------
-    def angular_iimfp(self, E, dE):
-        E_h  = E / h2ev
-        dE_h = dE / h2ev
-        if dE_h <= 0 or E_h <= dE_h:
-            return np.zeros_like(self._theta_i)
-
-        mu = 1.0 - dE_h / E_h
-        if mu <= 0.0:
-            return np.zeros_like(self._theta_i)
-    
-        q2 = 4*E_h - 2*dE_h - 4*np.sqrt(E_h*(E_h-dE_h))*np.cos(self._theta_i)
-        q2 = np.maximum(q2, 1e-12)
-    
-        sqrtq = np.sqrt(q2)
-    
-        f_rbs = self.elf_spline()
-        elf_vals = np.asarray(f_rbs(dE_h, sqrtq, grid=False)).reshape(-1)
-    
-        ang = (1.0 / (math.pi**2 * q2)) * np.sqrt(max(1.0 - dE_h / E_h, 0.0)) * elf_vals
-        return np.nan_to_num(ang, nan=0.0, posinf=0.0, neginf=0.0)
-
-
-    # ---------- DOS sampling cache (for metals) ----------
-    def dos_cdf(self):
-        """
-        Cache the DOS sampling CDF you were building in feg_dos().
-        In your model it depends on e_fermi and current energy_loss, but you used:
-        dist = sqrt(ener*(ener+energy_loss)).
-        We can precompute ener grid; the energy_loss dependence remains,
-        but we can still cache the ener grid and reuse integration logic cheaply.
-        """
-        if self._dos_cdf_cache is None:
-            if self.is_metal:
-                e_ref = self.e_fermi
-            else:
-                e_ref = float(self.material_data.get('e_vb', 0.0))
-            e_ref = max(e_ref, 1e-6)
-            ener = np.linspace(0.0, e_ref, 400)
-            self._dos_cdf_cache = ener
-        return self._dos_cdf_cache
-
-
-    def _precompute_inelastic_channel_cdfs(self):
-        """
-        Precompute CDFs for diimfp_se and diimfp_pl over omega for all energy bins.
-        Expects:
-          diimfp_se, diimfp_pl: (Nw,2,NE) where [:,0,:]=omega grid, [:,1,:]=pdf
-        """
-        def build(di_key):
-            di = np.asarray(self.material_data[di_key], float)  # (Nw,2,NE)
-            eloss = di[:, 0, :]   # (Nw,NE)
-            pdf   = np.nan_to_num(di[:, 1, :], nan=0.0, posinf=0.0, neginf=0.0)
-    
-            dx = np.diff(eloss, axis=0)
-            area = 0.5 * (pdf[1:, :] + pdf[:-1, :]) * dx
-            cdf = np.vstack([np.zeros((1, area.shape[1])), np.cumsum(area, axis=0)])
-    
-            total = cdf[-1, :]
-            has = (total > 0) & np.isfinite(total)
-    
-            cdf_norm = np.zeros_like(cdf)
-            cdf_norm[:, has] = cdf[:, has] / total[has]
-            cdf_norm[:, ~has] = 0.0
-            return eloss, cdf_norm, has
-    
-        self._inel_eloss_se, self._inel_cdf_se, self._inel_has_se = build("diimfp_se")
-        self._inel_eloss_pl, self._inel_cdf_pl, self._inel_has_pl = build("diimfp_pl")
-
-
+    # ------------------------------------------------------------------
+    # Elastic
+    # ------------------------------------------------------------------
     def _precompute_elastic_cdfs(self):
-        theta = np.asarray(self.material_data['decs_theta'], dtype=float)
-        decs = np.asarray(self.material_data['decs'], dtype=float)  # (Ntheta, Nenergy)
-    
-        if theta.ndim != 1 or decs.ndim != 2 or decs.shape[0] != theta.size:
-            raise ValueError(f"Bad elastic shapes: theta {theta.shape}, decs {decs.shape}")
+        theta = np.asarray(self.material_data["decs_theta"], dtype=float)
+        decs = np.asarray(self.material_data["decs"], dtype=float)
+
         if not np.all(np.diff(theta) > 0):
             raise ValueError("decs_theta must be strictly increasing")
-    
-        pdf = 2*np.pi * decs * np.sin(theta)[:, None]
+
+        pdf = 2.0 * np.pi * decs * np.sin(theta)[:, None]
         pdf = np.nan_to_num(pdf, nan=0.0, posinf=0.0, neginf=0.0)
-    
-        dx = np.diff(theta)[:, None]                    # (Ntheta-1, 1)
-        area = 0.5 * (pdf[1:, :] + pdf[:-1, :]) * dx    # (Ntheta-1, Nenergy)
-        cdf = np.vstack([np.zeros((1, pdf.shape[1])), np.cumsum(area, axis=0)])  # (Ntheta, Nenergy)
-    
+        pdf[pdf < 0] = 0.0
+
+        area = 0.5 * (pdf[1:, :] + pdf[:-1, :]) * np.diff(theta)[:, None]
+        cdf = np.vstack([np.zeros((1, pdf.shape[1])), np.cumsum(area, axis=0)])
+
         total = cdf[-1, :]
-        # avoid divide-by-zero
         good = (total > 0) & np.isfinite(total)
-        cdf[:, good] /= total[good]
-        cdf[:, ~good] = np.linspace(0.0, 1.0, theta.size)[:, None]
-    
+        if not np.all(good):
+            bad = np.where(~good)[0]
+            raise ValueError(
+                f"Elastic DCS integrates to zero at energy bins {bad[:5].tolist()}"
+                f"{' ...' if bad.size > 5 else ''}. The old code silently replaced these "
+                "with a uniform-in-theta distribution, which is not isotropic and not "
+                "physical; fix the table instead."
+            )
+        cdf /= total
+
         self._elastic_theta = theta
-        self._elastic_cdf_all = cdf
+        self._elastic_cdf = cdf
 
-    def _precompute_inelastic_cdfs(self):
-        """
-        Precompute CDFs for diimfp over energy loss for all energy bins.
-        Stores:
-          self._inel_eloss_all: (Neloss, Nenergy)
-          self._inel_cdf_all:   (Neloss, Nenergy) normalized where valid
-          self._inel_has:       (Nenergy,) boolean where integral>0
-        """
-        di = np.asarray(self.material_data['diimfp'], dtype=float)  # (Neloss, 2, Nenergy)
-        if di.ndim != 3 or di.shape[1] != 2:
-            raise ValueError(f"Expected diimfp shape (Neloss,2,Nenergy), got {di.shape}")
-    
-        eloss = di[:, 0, :]   # (Neloss, Nenergy)
-        pdf   = di[:, 1, :]   # (Neloss, Nenergy)
-    
-        # Replace bad values
-        pdf = np.nan_to_num(pdf, nan=0.0, posinf=0.0, neginf=0.0)
-    
-        # We assume eloss is nondecreasing in axis 0 for each energy bin (true in your DB build).
-        # Compute trapezoid cumulative sum along axis 0 for each column.
-        dx = np.diff(eloss, axis=0)                             # (Neloss-1, Nenergy)
-        area = 0.5 * (pdf[1:, :] + pdf[:-1, :]) * dx           # (Neloss-1, Nenergy)
-    
-        cdf = np.vstack([np.zeros((1, area.shape[1])), np.cumsum(area, axis=0)])  # (Neloss, Nenergy)
-    
-        total = cdf[-1, :]                                      # (Nenergy,)
-        has = (total > 0) & np.isfinite(total)
-    
-        # Normalize only where valid
-        cdf_norm = np.zeros_like(cdf)
-        cdf_norm[:, has] = cdf[:, has] / total[has]
-        # For invalid bins, leave zeros (we'll treat as "no inelastic")
-        cdf_norm[:, ~has] = 0.0
-    
-        self._inel_eloss_all = eloss
-        self._inel_cdf_all = cdf_norm
-        self._inel_has = has
+    def sample_elastic_theta(self, E_s, rng):
+        """Sample the elastic polar deflection, interpolating between energy bins."""
+        i, t = _bin_and_fraction(self.Egrid, self._clip_E(self._emfp_abscissa(E_s)))
+        j = i + 1 if (t > 0.0 and rng.random() < t) else i
+        return _invert_cdf(self._elastic_cdf[:, j], self._elastic_theta, rng.random())
 
-    def inv_imfp_pl(self, E):
-        E = self._clip_E(E)
-        return float(np.interp(E, self.Egrid, self.material_data["inv_imfp_pl"]))
+    # ------------------------------------------------------------------
+    # Inelastic: omega CDFs per channel per energy bin
+    # ------------------------------------------------------------------
+    def _precompute_inelastic_channel_cdfs(self):
+        def build(key):
+            di = np.asarray(self.material_data[key], float)      # (Nw, 2, NE)
+            eloss = di[:, 0, :]
+            pdf = np.nan_to_num(di[:, 1, :], nan=0.0, posinf=0.0, neginf=0.0)
+            pdf[pdf < 0] = 0.0
 
-    def inv_imfp_se(self, E):
-        E = self._clip_E(E)
-        return float(np.interp(E, self.Egrid, self.material_data["inv_imfp_se"]))
+            area = 0.5 * (pdf[1:, :] + pdf[:-1, :]) * np.diff(eloss, axis=0)
+            cdf = np.vstack([np.zeros((1, area.shape[1])), np.cumsum(area, axis=0)])
+            total = cdf[-1, :]
+            has = (total > 0) & np.isfinite(total)
+            # NOTE: kept UNNORMALISED.  Truncating at omega_max requires the
+            # absolute cumulative value; normalising here and renormalising
+            # later is what made the old sampler reject-and-drop.
+            return eloss, cdf, has
 
-    # def _precompute_inelastic_channel_cdfs(self):
-    #     """
-    #     Precompute per-energy-bin CDFs for omega for each channel.
-    #     This makes sampling omega fast; q is still conditional on omega per event.
-    #     """
-    #     q = np.asarray(self.material_data["q"], float)
-    #     w = np.asarray(self.material_data["omega"], float)
+        self._w_se, self._cdf_se, self._has_se = build("diimfp_se")
+        self._w_pl, self._cdf_pl, self._has_pl = build("diimfp_pl")
 
-    #     nq, nw = q.size, w.size
-    #     di_pl = _as_q_by_w(self.material_data["diimfp_pl"], nq, nw)
-    #     di_se = _as_q_by_w(self.material_data["diimfp_se"], nq, nw)
-
-    #     # If your diimfp_{pl,se} are energy-dependent, then this needs to be 3D.
-    #     # From your DB description they are 2D maps (q,omega) shared across E.
-    #     # So we just store CDFs once (global). If you later add E-dependence, refactor.
-    #     dq = np.diff(q)
-    #     dlam_dw_pl = np.sum(0.5 * (di_pl[1:, :] + di_pl[:-1, :]) * dq[:, None], axis=0)
-    #     dlam_dw_se = np.sum(0.5 * (di_se[1:, :] + di_se[:-1, :]) * dq[:, None], axis=0)
-
-    #     cdf_pl = _cdf_from_pdf(dlam_dw_pl, w)
-    #     cdf_se = _cdf_from_pdf(dlam_dw_se, w)
-
-    #     self._inel_w = w
-    #     self._inel_dlam_dw_pl = dlam_dw_pl
-    #     self._inel_dlam_dw_se = dlam_dw_se
-    #     self._inel_cdf_w_pl = cdf_pl
-    #     self._inel_cdf_w_se = cdf_se
-
-    # def sample_inelastic_channel_w_q(self, E, rng):
-    #     """
-    #     Sample channel, omega, q using:
-    #       - channel weights from inv_imfp_pl/se(E)
-    #       - omega from marginal ∫dq diimfp_ch(q,omega), truncated by omega<=Eeff
-    #       - q from conditional diimfp_ch(q|omega), restricted to projectile kinematic [q-,q+]
-    #     Returns (ch, omega, q) or None.
-    #     """
-    #     # metal guard (same as Electron.iimfp)
-    #     if self.is_metal and E <= self.e_fermi:
-    #         return None
-
-    #     # Use Eeff if you enforce omega <= E - EF for metals (recommended):
-    #     Eeff = E - self.e_fermi if self.is_metal else E
-    #     if Eeff <= 0.0:
-    #         return None
-
-    #     inv_pl = self.inv_imfp_pl(E)
-    #     inv_se = self.inv_imfp_se(E)
-    #     s = inv_pl + inv_se
-    #     if not np.isfinite(s) or s <= 0.0:
-    #         return None
-
-    #     ch = "pl" if (rng.random() < inv_pl / s) else "se"
-
-    #     # omega sampling from precomputed CDF, truncated at Eeff
-    #     w = self._inel_w
-    #     iwmax = int(np.searchsorted(w, Eeff, side="right") - 1)
-    #     iwmax = int(np.clip(iwmax, 0, w.size - 1))
-    #     if iwmax < 1:
-    #         return None
-
-    #     if ch == "pl":
-    #         cdf_full = self._inel_cdf_w_pl
-    #     else:
-    #         cdf_full = self._inel_cdf_w_se
-    #     if cdf_full is None:
-    #         return None
-
-    #     # Renormalize truncated CDF [0..iwmax] by linear scaling
-    #     cdf_tr = cdf_full[:iwmax + 1]
-    #     cmax = float(cdf_tr[-1])
-    #     if cmax <= 0.0 or not np.isfinite(cmax):
-    #         return None
-
-    #     u = rng.random() * cmax
-    #     omega = _sample_from_cdf(cdf_tr, w[:iwmax + 1], u / cmax)
-
-    #     # q conditional on omega using your InelasticChannelSampler (no reject)
-    #     # (it already handles kinematic q-bounds)
-    #     res = self._inel_sampler.sample(Eeff, rng=rng)
-    #     if res is None:
-    #         return None
-    #     ch2, omega2, q = res
-
-    #     # ensure consistency: force channel we chose, but reuse omega from the same sample
-    #     # simplest: just trust sampler’s own channel/omega sampling:
-    #     return ch2, omega2, q
-
-    def sample_inelastic_channel_w_q(self, E_solid_eV, rng):
-        """
-        Option A sampler:
-          1) choose channel using inv_imfp_pl/se(E)
-          2) sample omega from diimfp_pl/se CDF at that energy bin
-          3) sample q from ELF_pl/se(omega,q) within kinematic bounds
-    
-        Returns (ch, omega_eV, q_a0inv) or None.
-        """
-        # metal guard (your model)
-        if self.is_metal and E_solid_eV <= self.e_fermi:
-            return None
-    
-        # energy bin for ω tables and inv_imfp arrays
-        ind = self.energy_index(E_solid_eV)
-    
-        inv_pl = float(self.material_data["inv_imfp_pl"][ind])
-        inv_se = float(self.material_data["inv_imfp_se"][ind])
-        s = inv_pl + inv_se
-        if s <= 0.0 or not np.isfinite(s):
-            return None
-        ch = "pl" if (rng.random() < inv_pl / s) else "se"
-    
-        # ω sampling (and enforce ω <= E - EF for metals)
-        Eeff = E_solid_eV - self.e_fermi if self.is_metal else E_solid_eV
-        if Eeff <= 0.0:
-            return None
-    
+    def _channel_tables(self, ch):
         if ch == "se":
-            if not self._inel_has_se[ind]:
-                return None
-            wgrid = self._inel_eloss_se[:, ind]
-            cdf   = self._inel_cdf_se[:, ind]
-        else:
-            if not self._inel_has_pl[ind]:
-                return None
-            wgrid = self._inel_eloss_pl[:, ind]
-            cdf   = self._inel_cdf_pl[:, ind]
-    
-        # sample ω, but reject/clip beyond Eeff (simple and safe)
-        omega = float(np.interp(rng.random(), cdf, wgrid))
-        if omega <= 0.0 or omega >= Eeff:
-            return None
-    
-        # q sampling from ELF at this omega (still need E for q-bounds)
-        q = self.sample_q_from_elf(ch, Eeff, omega, rng)
-        if q is None:
-            return None
-    
-        return ch, omega, q
+            return self._w_se, self._cdf_se, self._has_se
+        return self._w_pl, self._cdf_pl, self._has_pl
 
-    def sample_target_k_FEG_disk_au(self, omega_eV, q_a0inv, rng):
-        """
-        Disk/annulus sampling in atomic units.
-        Returns k_vec (a0^-1) or None.
-        """
-        if not self.is_metal:
+    def choose_channel(self, E_s, rng):
+        E = self._clip_E(self._imfp_abscissa(E_s))
+        inv_pl = float(np.interp(E, self.Egrid, self.material_data["inv_imfp_pl"]))
+        inv_se = float(np.interp(E, self.Egrid, self.material_data["inv_imfp_se"]))
+        s = inv_pl + inv_se
+        if not np.isfinite(s) or s <= 0.0:
             return None
+        return "pl" if (rng.random() < inv_pl / s) else "se"
+
+    def sample_energy_loss(self, ch, E_s, rng, diag):
+        """
+        Draw omega from the channel DIIMFP, with the CDF truncated at
+        omega_max = E_s - E_F.  Truncating BEFORE sampling (rather than
+        sampling then rejecting) keeps the realised inelastic rate equal to
+        1/imfp; the old code's post-hoc rejection quietly lengthened the
+        effective IMFP and softened the stopping power.
+        """
+        w_all, cdf_all, has = self._channel_tables(ch)
+
+        i, t = _bin_and_fraction(self.Egrid, self._clip_E(self._imfp_abscissa(E_s)))
+        j = i + 1 if (t > 0.0 and rng.random() < t) else i
+        if not has[j]:
+            diag["omega_cdf_empty"] += 1
+            return None
+
+        wgrid = w_all[:, j]
+        cdf = cdf_all[:, j]
+
+        w_max = min(self.omega_max(E_s), float(wgrid[-1]))
+        if w_max <= float(wgrid[0]):
+            diag["omega_cdf_empty"] += 1
+            return None
+
+        c_max = float(np.interp(w_max, wgrid, cdf))
+        if c_max <= 0.0 or not np.isfinite(c_max):
+            diag["omega_cdf_empty"] += 1
+            return None
+
+        omega = _invert_cdf(cdf, wgrid, rng.random() * c_max)
+        omega = min(omega, w_max)
+        return omega if omega > 0.0 else None
+
+    # ------------------------------------------------------------------
+    # Inelastic: q sampling from the channel-resolved ELF
+    # ------------------------------------------------------------------
+    def _build_elf_channel_splines(self):
+        md = self.material_data
+        omega_h = np.asarray(md["omega"], float) / H2EV
+        q_raw = np.asarray(md["q"], float)
+        # ONE declared unit for the whole module (the old code read this key as
+        # A^-1 in elf_spline() and as a0^-1 in elf_channel_splines()).
+        q_a0inv = q_raw if self.cfg.q_unit == "a0^-1" else q_raw * A0_ANG
+        if np.any(q_a0inv <= 0):
+            raise ValueError("material_data['q'] must be strictly positive for log-q sampling")
+        qlog = np.log(q_a0inv)
+
+        elf_se = np.asarray(md["elf_se"], float)
+        elf_pl = np.asarray(md["elf_pl"], float)
+        if elf_se.shape != (omega_h.size, qlog.size):
+            if elf_se.shape == (qlog.size, omega_h.size):
+                elf_se = elf_se.T
+                elf_pl = elf_pl.T
+            else:
+                raise ValueError(
+                    f"ELF shape {elf_se.shape} matches neither (Nw, Nq) = "
+                    f"({omega_h.size}, {qlog.size}) nor its transpose"
+                )
+
+        self._omega_h_grid = omega_h
+        self._qlog_grid = qlog
+        self._elf_spl = {
+            "se": RectBivariateSpline(omega_h, qlog, elf_se, kx=1, ky=1),
+            "pl": RectBivariateSpline(omega_h, qlog, elf_pl, kx=1, ky=1),
+        }
+
+    def qlog_bounds(self, E_s, omega):
+        """
+        Relativistic momentum-transfer bounds in log(q / a0^-1).
+
+        Shinotsuka Eq. (2): the bounds are evaluated at T' = E_s, the
+        VB-bottom-referenced energy -- NOT at E_s - E_F.  Using E_s - E_F
+        here (as the previous version did) narrows the q window and biases
+        every inelastic deflection angle.
+        """
+        k = _k_rel_au(E_s)
+        kp = _k_rel_au(max(E_s - omega, 0.0))
+        q_minus = abs(k - kp)
+        q_plus = k + kp
+        if q_minus <= 0.0 or q_plus <= q_minus:
+            return None
+        return math.log(q_minus), math.log(q_plus), k, kp
+
+    def sample_q(self, ch, E_s, omega, rng, diag):
+        """
+        Sample q inside [q-, q+] from ELF_ch(omega, q), in log q (the variable
+        the DIIMFP was integrated over).
+
+        The CDF is built on a fresh grid spanning the kinematic window rather
+        than on whatever tabulated q points happen to fall inside it, so a
+        narrow window (small omega, high E) can no longer produce an empty
+        interval and a dropped collision.
+        """
+        bounds = self.qlog_bounds(E_s, omega)
+        if bounds is None:
+            diag["q_cdf_empty"] += 1
+            return None
+        qm_log, qp_log, k, kp = bounds
+
+        lo, hi = self._qlog_grid[0], self._qlog_grid[-1]
+        if qm_log < lo or qp_log > hi:
+            diag["q_window_clipped"] += 1
+        qm_log = max(qm_log, lo)
+        qp_log = min(qp_log, hi)
+        if qp_log <= qm_log:
+            diag["q_cdf_empty"] += 1
+            return None
+
+        qlog = np.linspace(qm_log, qp_log, self.cfg.n_q_sample)
+        omega_h = omega / H2EV
+        elf = np.asarray(
+            self._elf_spl[ch].ev(np.full_like(qlog, omega_h), qlog), float
+        )
+        elf = np.nan_to_num(elf, nan=0.0, posinf=0.0, neginf=0.0)
+        elf[elf < 0.0] = 0.0
+
+        cdf = cumtrapz_numpy(elf, qlog)
+        total = float(cdf[-1])
+        if total <= 0.0 or not np.isfinite(total):
+            diag["q_cdf_empty"] += 1
+            return None
+
+        q = math.exp(_invert_cdf(cdf / total, qlog, rng.random()))
+        # Guaranteed by construction, but this is the invariant that the old
+        # code violated silently through the acos() clamp.
+        q = min(max(q, abs(k - kp)), k + kp)
+        return q, k, kp
+
+    # ------------------------------------------------------------------
+    # Free-electron-gas target sampling
+    # ------------------------------------------------------------------
+    def sample_target_electron(self, omega, q_a0inv, rng, diag):
+        """
+        Sample the initial state of the struck electron for a single-particle
+        (channel 'se') excitation of a free electron gas.
+
+        Works in a local frame with z || q, all in Hartree atomic units:
+            omega = (q^2 + 2 k_z q)/2   ->   k_z = (2 omega - q^2)/(2 q)
+        with |k| <= k_F (occupied) and |k + q| >= k_F (Pauli blocking).
+        The allowed set is an annulus in the k_z plane; sampling uniformly in
+        area is the correct weight because the FEG matrix element does not
+        depend on k.
+
+        Returns (k_perp, k_z) in a0^-1, or None if the state is blocked.
+        """
         if q_a0inv <= 0.0:
             return None
-    
-        omega_h = omega_eV / h2ev
-        ef_h    = self.e_fermi / h2ev
-    
-        kF = math.sqrt(max(2.0 * ef_h, 0.0))  # since E = k^2/2 (Hartree)
-    
+        omega_h = omega / H2EV
+        kF = math.sqrt(max(2.0 * self.e_fermi / H2EV, 0.0))
         q = float(q_a0inv)
-    
-        # from ω = (q^2 + 2 kz q)/2  -> kz = (2ω - q^2)/(2q)
-        kz = (2.0 * omega_h - q*q) / (2.0 * q)
-    
-        r_out_sq = kF*kF - kz*kz
+
+        kz = (2.0 * omega_h - q * q) / (2.0 * q)
+
+        r_out_sq = kF * kF - kz * kz
         if r_out_sq <= 0.0:
+            diag["se_blocked_pauli"] += 1
             return None
         r_out = math.sqrt(r_out_sq)
-    
-        # Pauli blocking: |k+q| >= kF  -> k_perp^2 + (kz+q)^2 >= kF^2
-        r_in_sq = kF*kF - (kz + q)*(kz + q)
-        if r_in_sq > 0.0:
-            r_in = math.sqrt(r_in_sq)
-            if r_in >= r_out:
-                return None
-        else:
-            r_in = 0.0
-    
+
+        r_in_sq = kF * kF - (kz + q) * (kz + q)
+        r_in = math.sqrt(r_in_sq) if r_in_sq > 0.0 else 0.0
+        if r_in >= r_out:
+            diag["se_blocked_pauli"] += 1
+            return None
+
         u = rng.random()
-        r = math.sqrt(r_in*r_in + u*(r_out*r_out - r_in*r_in))
-        phi = 2.0 * math.pi * rng.random()
-    
-        kx = r * math.cos(phi)
-        ky = r * math.sin(phi)
-        return np.array([kx, ky, kz], float)
+        r = math.sqrt(r_in * r_in + u * (r_out * r_out - r_in * r_in))
+        return r, kz
 
-    def sample_target_k_FEG(self, omega, q, rng):
+    def sample_plasmon_target_energy(self, omega, rng):
         """
-        Sample initial target electron k-vector inside Fermi sphere
-        consistent with (omega, q) for single-electron excitation.
-    
-        Returns k_vec (3-array) or None if no allowed state.
-        Units:
-            q in Å^-1
-            omega in eV
+        Initial energy of the electron promoted by plasmon decay, drawn from
+        the free-electron joint density of states  ~ sqrt(E (E + omega))  on
+        [0, E_F].  Rejection sampling (the old code rebuilt a 400-point
+        trapezoid CDF on every single plasmon event).
         """
-    
-        alpha = HBAR2_2M_eVA2  # ħ²/2m in eV·Å²
-    
-        # Fermi wavevector
-        if not self.is_metal:
-            return None  # only defined for metal FEG
-    
-        kF = math.sqrt(max(self.e_fermi, 0.0) / alpha)
-    
-        if q <= 0.0:
-            return None
-    
-        # k_z plane from energy-momentum constraint:
-        # k_z = (omega/alpha - q^2) / (2q)
-        kz = (omega / alpha - q*q) / (2.0*q)
-    
-        # must lie inside Fermi sphere
-        r_out_sq = kF*kF - kz*kz
-        if r_out_sq <= 0.0:
-            return None
-    
-        r_out = math.sqrt(r_out_sq)
-    
-        # Pauli blocking: final state k+q must lie outside Fermi sphere
-        # |k+q|^2 = k_perp^2 + (kz+q)^2
-        r_in_sq = kF*kF - (kz + q)*(kz + q)
-    
-        if r_in_sq > 0.0:
-            r_in = math.sqrt(r_in_sq)
-            if r_in >= r_out:
-                return None  # fully blocked
-        else:
-            r_in = 0.0
-    
-        # Sample uniformly in disk or annulus
-        u = rng.random()
-        r = math.sqrt(r_in*r_in + u*(r_out*r_out - r_in*r_in))
-        phi = 2.0 * math.pi * rng.random()
-    
-        kx = r * math.cos(phi)
-        ky = r * math.sin(phi)
-    
-        return np.array([kx, ky, kz])
+        e_ref = self.e_fermi if self.is_metal else self.e_vb
+        e_ref = max(e_ref, 1e-6)
+        f_max = math.sqrt(e_ref * (e_ref + omega))
+        if f_max <= 0.0:
+            return 0.0
+        for _ in range(200):
+            e = rng.random() * e_ref
+            if rng.random() * f_max <= math.sqrt(e * (e + omega)):
+                return e
+        return 0.5 * e_ref
 
-    def elf_channel_splines(self):
-        """
-        Build RectBivariateSpline on (omega_hartree, log(q_a0inv)) for elf_se and elf_pl.
-        Assumes:
-          material_data['omega'] in eV
-          material_data['q'] in a0^-1
-          material_data['elf_se'], ['elf_pl'] shaped (Nw,Nq)
-        """
-        if getattr(self, "_elf_se_spl", None) is None:
-            omega_h = np.asarray(self.material_data["omega"], float) / h2ev  # Hartree
-            q_a0inv = np.asarray(self.material_data["q"], float)            # a0^-1
-            qlog = np.log(q_a0inv)
-    
-            elf_se = np.asarray(self.material_data["elf_se"], float)
-            elf_pl = np.asarray(self.material_data["elf_pl"], float)
-    
-            # ensure (Nw,Nq)
-            if elf_se.shape != (omega_h.size, qlog.size):
-                if elf_se.shape == (qlog.size, omega_h.size):
-                    elf_se = elf_se.T
-                    elf_pl = elf_pl.T
-                else:
-                    raise ValueError(f"ELF shape mismatch: elf_se {elf_se.shape}, expected (Nw,Nq)")
-    
-            self._elf_se_spl = RectBivariateSpline(omega_h, qlog, elf_se, kx=1, ky=1)
-            self._elf_pl_spl = RectBivariateSpline(omega_h, qlog, elf_pl, kx=1, ky=1)
-    
-            self._qlog_grid = qlog
-    
-        return self._elf_se_spl, self._elf_pl_spl
 
-    def _qlog_bounds_rel(self, E_eV, omega_eV):
-        """
-        Relativistic q bounds in atomic units (a0^-1), returned as (qm_log, qp_log).
-        Matches your database-build formulas.
-        """
-        c = 137.036
-        e0 = E_eV / h2ev
-        om = omega_eV / h2ev
-        emw = max(e0 - om, 0.0)
-        qm = np.log(np.sqrt(e0*(2 + e0/c**2)) - np.sqrt(emw*(2 + emw/c**2)))
-        qp = np.log(np.sqrt(e0*(2 + e0/c**2)) + np.sqrt(emw*(2 + emw/c**2)))
-        return qm, qp
-    
-    def sample_q_from_elf(self, ch, E_eV, omega_eV, rng):
-        """
-        Sample q (a0^-1) from ELF_ch(omega,q) over allowed projectile bounds [q-, q+].
-        Sampling is done in log(q), consistent with how DIIMFP was integrated (d log q).
-        """
-        se_spl, pl_spl = self.elf_channel_splines()
-        spl = se_spl if ch == "se" else pl_spl
-    
-        # bounds in log(q)
-        qm, qp = self._qlog_bounds_rel(E_eV, omega_eV)
-        if not np.isfinite(qm) or not np.isfinite(qp) or qp <= qm:
-            return None
-    
-        qlog_grid = self._qlog_grid
-        i0 = int(np.searchsorted(qlog_grid, qm, side="left"))
-        i1 = int(np.searchsorted(qlog_grid, qp, side="right") - 1)
-        i0 = max(i0, 0)
-        i1 = min(i1, qlog_grid.size - 1)
-        if i1 <= i0:
-            return None
-    
-        qlog = qlog_grid[i0:i1+1]
-    
-        # evaluate ELF at this omega on the qlog slice
-        omega_h = omega_eV / h2ev
-        w = np.asarray(spl.ev(np.full_like(qlog, omega_h), qlog), float)
-        w = np.nan_to_num(w, nan=0.0, posinf=0.0, neginf=0.0)
-        w[w < 0] = 0.0
-    
-        # build CDF in qlog
-        cdf = cumtrapz_numpy(w, qlog)
-        tot = float(cdf[-1])
-        if tot <= 0.0 or not np.isfinite(tot):
-            return None
-        cdf /= tot
-    
-        qlog_s = float(np.interp(rng.random(), cdf, qlog))
-        q = float(np.exp(qlog_s))  # a0^-1
-        return q
+# --------------------------------------------------------------------------
+# Electron
+# --------------------------------------------------------------------------
+@dataclass
+class Secondary:
+    """A secondary electron requested by an inelastic collision."""
+    energy: float               # E_s, VB-bottom referenced
+    uvw: list
+    xyz: list
+    generation: int
+
+
+@dataclass
+class Emission:
+    """Record of one electron leaving the surface."""
+    energy: float               # vacuum kinetic energy, eV
+    uz: float                   # direction cosine w.r.t. -z (outward), in (0, 1]
+    is_cascade: bool            # born in the cascade (vs. the incident electron)
+    generation: int
+    birth_depth: float
 
 
 class Electron:
-    def __init__(self, sample: Sample, energy, cb_ref, save_coord, xyz, uvw, gen, se, ind, rng):
+    """
+    One electron.  `energy` is always E_s (VB-bottom referenced) while inside
+    the solid, and becomes the vacuum kinetic energy after emission.
+    """
+
+    def __init__(self, sample: Sample, energy, xyz, uvw, generation=0,
+                 is_cascade=False, rng=None, save_coordinates=False):
         self.sample = sample
-        self.conduction_band_reference = cb_ref
-        self.save_coordinates = save_coord
-        self.xyz = [float(x) for x in xyz]
-        self.uvw = [float(u) for u in uvw]
-        self.generation = int(gen)
-        self.is_secondary = bool(se)
-        self.parent_index = int(ind)
+        self.cfg = sample.cfg
         self.rng = rng
 
-        # --- ENERGY CONVENTION ---
-        # While inside the solid: energy is E_s referenced to valence-band bottom (VB bottom = 0).
         self.energy = float(energy)
         self.initial_energy = self.energy
-        self.initial_depth = self.xyz[2]
+        self.xyz = [float(v) for v in xyz]
+        self.uvw = [float(v) for v in uvw]
+        self.generation = int(generation)
+        self.is_cascade = bool(is_cascade)
+        self.birth_depth = self.xyz[2]
 
         self.inside = True
         self.dead = False
-
-        self.scattering_type = -1
-        self.energy_loss = 0.0
-        self.energy_se = 0.0
-        self.n_secondaries = 0
         self.path_length = 0.0
-        self.deflection = [0.0, 0.0]
-
+        self.save_coordinates = bool(save_coordinates)
         self.coordinates = []
+        self._record()
+
+        self.Ui = sample.Ui
+        self.e_fermi = sample.e_fermi
+        self._inv_e, self._inv_i = sample.inverse_mfps(self.energy)
+
+    # -- convenience ---------------------------------------------------
+    def _record(self):
         if self.save_coordinates:
-            self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
+            self.coordinates.append([round(v, 3) for v in self.xyz] + [round(self.energy, 3)])
 
-        # material params
-        self.work_function = float(self.sample.material_data.get('work_function', 0.0))
-        self.e_fermi = float(self.sample.material_data.get('e_fermi', 0.0))
+    def refresh_rates(self):
+        """Evaluate the inverse MFPs once per step and cache them."""
+        self._inv_e, self._inv_i = self.sample.inverse_mfps(self.energy)
+        return self._inv_e + self._inv_i
 
-        # Full barrier from VB bottom to vacuum level for metals: Ui = Ef + phi
-        self.Ui = self.e_fermi + self.work_function
-    
-        # Optional: store vacuum energy upon emission (None while inside)
-        self.energy_vac = None
-        self.inel_channel = None
-
-    # --- rates ---
     @property
     def iemfp(self):
-        emfp = self.sample.get_emfp(self.energy)
-        if (not np.isfinite(emfp)) or emfp <= 0:
-            return 0.0
-        return 1.0 / emfp
+        return self.sample.inverse_mfps(self.energy)[0]
 
     @property
     def iimfp(self):
-        # Metal model: inelastic only if E > E_F
-        if self.sample.is_metal and self.energy <= self.e_fermi:
-            return 0.0
-
-        imfp = self.sample.get_imfp(self.energy)
-        if (not np.isfinite(imfp)) or imfp <= 0:
-            return 0.0
-        return 1.0 / imfp
+        return self.sample.inverse_mfps(self.energy)[1]
 
     @property
     def itmfp(self):
-        return self.iemfp + self.iimfp  # (phonons omitted here; add back later if needed)
+        inv_e, inv_i = self.sample.inverse_mfps(self.energy)
+        return inv_e + inv_i
 
-    def is_dead(self):
+    def check_alive(self):
+        """
+        Called at the TOP of every transport step (the old code only checked
+        after an inelastic loss, which let a sub-barrier electron in a
+        non-metal scatter elastically forever).
+        """
         if (not np.isfinite(self.energy)) or self.energy <= 0.0:
             self.dead = True
             return
-    
-        if self.inside and self.energy <= self.Ui:
+        if self.inside and self.energy <= self.Ui and not self.cfg.track_subbarrier:
+            # Cannot escape a step barrier and cannot gain energy: terminal.
             self.dead = True
-            return
 
-    # --- transport ---
+    # -- transport -----------------------------------------------------
     def travel(self):
-        rate = self.itmfp
+        """
+        Advance one free path.  Returns True if the step was truncated by the
+        surface, in which case NO collision may be processed for this step.
+        """
+        rate = self.refresh_rates()
         if (not np.isfinite(rate)) or rate <= 0.0:
             self.dead = True
-            return
+            return False
 
-        s = -math.log(self.rng.random()) / rate
+        s = -math.log(max(self.rng.random(), 1e-300)) / rate
 
-        # stop exactly at surface if would cross (vacuum is z<0)
         hit_surface = False
-        if self.uvw[2] < 0.0 and abs(self.uvw[2]) > 1e-15:
+        if self.uvw[2] < -1e-15:
             s_to_surface = -self.xyz[2] / self.uvw[2]
             if 0.0 <= s_to_surface < s:
                 s = s_to_surface
                 hit_surface = True
-        
+
         self.path_length += s
         self.xyz[0] += self.uvw[0] * s
         self.xyz[1] += self.uvw[1] * s
         self.xyz[2] += self.uvw[2] * s
-        
         if hit_surface:
-            self.xyz[2] = 0.0  # Explicitly snap to surface
-
-        if self.save_coordinates:
-            self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
-
-    def get_scattering_type(self):
-        total = self.itmfp
-        if total <= 0 or (not np.isfinite(total)):
-            self.dead = True
-            return
-
-        r = self.rng.random()
-        pel = self.iemfp / total
-        # no phonons here; re-add later if desired
-        self.scattering_type = 0 if (r < pel) else 1
-
-    def scatter(self):
-        self.deflection[1] = self.rng.random() * 2.0 * math.pi
-
-        if self.scattering_type == 0:
-            # elastic: use elastic-clamped energy bin
-            # ind = self.sample.energy_index(max(self.energy, self.sample.elastic_min_energy))
-            E_vac = self.energy - self.Ui
-            ind = self.sample.energy_index(max(E_vac, self.sample.elastic_min_energy))
-            theta_grid, cdf = self.sample.get_elastic_theta_cdf(ind)
-            
-            u = self.rng.random()
-            self.deflection[0] = float(np.interp(u, cdf, theta_grid))
-            self.uvw = self.change_direction(self.uvw, self.deflection)
-            return False  # no SE creation
-
-        # inelastic
-        if self.sample.is_metal and self.energy <= self.e_fermi:
-            # should not happen because iimfp=0, but stay safe
-            return False
-
-        # -------- inelastic (channel-resolved, Option A) --------
-        triple = self.sample.sample_inelastic_channel_w_q(self.energy, self.rng)
-        if triple is None:
-            return False
-        
-        ch, omega, q_a0inv = triple
-        self.inel_channel = ch
-        self.energy_loss = float(omega)
-        
-        E_before = self.energy
-        self.energy -= self.energy_loss
-        self.is_dead()
-        if self.dead:
-            return True
-        
-        # projectile deflection:
-        # you currently compute deflection from q in Å^-1; but here q is a0^-1.
-        # Convert q(a0^-1) -> q(Å^-1) by dividing by a0(Å):
-        q_Ainv = q_a0inv / a0
-        
-        k  = math.sqrt(max(E_before, 0.0) / HBAR2_2M_eVA2)
-        kp = math.sqrt(max(self.energy, 0.0) / HBAR2_2M_eVA2)
-        if k > 0 and kp > 0:
-            cos_th = (k*k + kp*kp - q_Ainv*q_Ainv) / (2.0*k*kp)
-            cos_th = min(1.0, max(-1.0, cos_th))
-            self.deflection[0] = math.acos(cos_th)
-        else:
-            self.deflection[0] = 0.0
-        
-        self.uvw = self.change_direction(self.uvw, self.deflection)
-        
-        # secondary energy model:
-        if ch == "se":
-            k_i = self.sample.sample_target_k_FEG_disk_au(self.energy_loss, q_a0inv, self.rng)
-            if k_i is None:
-                self.energy_se = 0.0
-                return True
-        
-            k_f = np.array([k_i[0], k_i[1], k_i[2] + q_a0inv])
-            Ei_h = 0.5 * float(np.dot(k_i, k_i))
-            # Ef_h = 0.5 * float(np.dot(k_f, k_f))  # would equal Ei_h + omega_h
-            self.energy_se = Ei_h * h2ev            # VB-bottom referenced initial energy
-        else:
-            # plasmon: keep your existing phase-space secondary model
-            self.feg_dos()
-        
-        return True
-
-    def feg_dos(self):
-        e_ref = self.e_fermi if self.sample.is_metal else float(self.sample.material_data.get('e_vb', 0.0))
-        e_ref = max(e_ref, 1e-6)
-
-        ener = self.sample.dos_cdf()
-        # energy_loss changes per event, so CDF changes; but we avoid rebuilding ener each time
-        dist = np.sqrt(np.maximum(ener * (ener + self.energy_loss), 0.0))
-        cdf = cumtrapz_numpy(dist, ener)
-        total = float(cdf[-1])
-        if total > 0 and np.isfinite(total):
-            cdf = cdf / total
-            self.energy_se = float(np.interp(self.rng.random(), cdf, ener))
-        else:
-            self.energy_se = 0.0
+            self.xyz[2] = 0.0
+        self._record()
+        return hit_surface
 
     def escape(self):
-        # Only call when at/above surface crossing
-        # Remember to use the 1e-12 epsilon fix discussed previously!
-        if self.xyz[2] > 1e-12:
-            return False
-    
-        Ui = self.Ui
+        """
+        Attempt to cross the planar step barrier of height U_i.
+        Returns True if the electron left the solid; otherwise it has been
+        specularly reflected and stays inside.
+        """
         Es = self.energy
         ux, uy, uz = self.uvw
-    
-        # If total energy is below barrier, it can never escape (step-barrier model)
-        if Es <= Ui:
-            self._specular_reflect_into_solid()
+
+        E_perp = Es * uz * uz
+        if Es <= self.Ui or E_perp <= self.Ui:
+            self._reflect()
             return False
-    
-        # Perpendicular energy condition for having a propagating solution in vacuum
-        Eperp = Es * (uz * uz)
-        if Eperp <= Ui:
-            self._specular_reflect_into_solid()
+
+        # Step-barrier transmission, T = 4 k1z k2z / (k1z + k2z)^2
+        root = math.sqrt(1.0 - self.Ui / E_perp)
+        T = 4.0 * root / ((1.0 + root) ** 2)
+        if self.rng.random() >= T:
+            self._reflect()
             return False
-    
-        # Quantum transmission probability for step (depends on Eperp)
-        root = math.sqrt(1.0 - Ui / Eperp)
-        t = 4.0 * root / ((1.0 + root) ** 2)
-    
-        if self.rng.random() >= t:
-            self._specular_reflect_into_solid()
-            return False
-    
-        # Transmit into vacuum
-        Ev = Es - Ui
-        if Ev <= 0.0:
-            self.dead = True
-            return False
-    
-        # Conserve parallel momentum -> check for total internal reflection
-        Epar = Es * (ux*ux + uy*uy)
-        if Ev <= Epar:
-            # Cannot satisfy real uz_out -> reflect specularly
-            self._specular_reflect_into_solid()
-            return False
-    
-        # Calculate new trajectory in vacuum (conserving parallel momentum)
-        s = math.sqrt(Es / Ev)
-        ux_out = ux * s
-        uy_out = uy * s
-        # Vacuum is z < 0, so uz_out must be negative
-        uz_out = -math.sqrt(1.0 - (ux_out*ux_out + uy_out*uy_out))
-    
+
+        Ev = Es - self.Ui
+        # Parallel momentum is conserved; E_perp > U_i already guarantees a
+        # real outgoing u_z, so no separate total-internal-reflection test.
+        scale = math.sqrt(Es / Ev)
+        ux_out = ux * scale
+        uy_out = uy * scale
+        uz_out = -math.sqrt(max(1.0 - (ux_out * ux_out + uy_out * uy_out), 0.0))
+
         self.inside = False
         self.uvw = [ux_out, uy_out, uz_out]
-        self.energy_vac = Ev
         self.energy = Ev
         self.xyz[2] = 0.0
+        self._record()
         return True
-    
-    
-    def _specular_reflect_into_solid(self):
-        # Specular reflection: invert only the surface-normal velocity (z-axis)
-        # Since the solid is z > 0, the new uz must be positive
+
+    def _reflect(self):
         self.uvw[2] = abs(self.uvw[2])
-        
-        # Push back a tiny distance to avoid being trapped exactly at z=0 due to floating point limits
-        self.xyz[2] = 1e-6
-        
-        if self.save_coordinates:
-            self.coordinates.append([round(v, 2) for v in self.xyz + [self.energy]])
+        self.xyz[2] = 0.0          # u_z > 0 now, so the surface test cannot re-trigger
+        self._record()
 
+    # -- collisions ----------------------------------------------------
+    def choose_scattering_type(self):
+        # Reuses the rates computed by travel() for this very step: the
+        # branching ratio must be the one that generated the free path.
+        inv_e, inv_i = self._inv_e, self._inv_i
+        total = inv_e + inv_i
+        if total <= 0.0 or not np.isfinite(total):
+            self.dead = True
+            return None
+        return "elastic" if (self.rng.random() < inv_e / total) else "inelastic"
 
-    def change_direction(self, uvw, deflection):
-        # normalized rotation (your earlier function but stable)
-        new_uvw = [0.0, 0.0, 0.0]
-        sin_psi = math.sin(deflection[0])
-        cos_psi = math.cos(deflection[0])
-        sin_fi = math.sin(deflection[1])
-        cos_fi = math.cos(deflection[1])
+    def scatter(self, diag):
+        """
+        Perform one collision.  Returns a `Secondary` to be queued, or None.
+        All per-collision state is local: nothing can leak into the next event.
+        """
+        kind = self.choose_scattering_type()
+        if kind is None:
+            return None
 
-        cos_theta = uvw[2]
-        sin_theta = math.sqrt(max(uvw[0]**2 + uvw[1]**2, 0.0))
-        if sin_theta > 1e-12:
-            cos_phi = uvw[0] / sin_theta
-            sin_phi = uvw[1] / sin_theta
+        if kind == "elastic":
+            diag["elastic_events"] += 1
+            theta = self.sample.sample_elastic_theta(self.energy, self.rng)
+            phi = 2.0 * math.pi * self.rng.random()
+            self.uvw = rotate_direction(self.uvw, theta, phi)
+            return None
+
+        return self._inelastic(diag)
+
+    def _inelastic(self, diag):
+        smp = self.sample
+        rng = self.rng
+
+        ch = smp.choose_channel(self.energy, rng)
+        if ch is None:
+            return None
+
+        omega = smp.sample_energy_loss(ch, self.energy, rng, diag)
+        if omega is None:
+            return None
+
+        qres = smp.sample_q(ch, self.energy, omega, rng, diag)
+        if qres is None:
+            return None
+        q, k, kp = qres
+
+        diag["inelastic_events"] += 1
+
+        # --- projectile deflection (relativistic momenta, same as the bounds)
+        cos_theta_p = (k * k + kp * kp - q * q) / (2.0 * k * kp)
+        cos_theta_p = min(1.0, max(-1.0, cos_theta_p))
+        theta_p = math.acos(cos_theta_p)
+        phi_p = 2.0 * math.pi * rng.random()
+
+        uvw_before = list(self.uvw)          # <-- the SE frame, captured BEFORE rotating
+        self.uvw = rotate_direction(uvw_before, theta_p, phi_p)
+        self.energy -= omega
+        self._record()
+
+        # --- secondary electron
+        if ch == "se":
+            return self._secondary_from_binary_encounter(
+                uvw_before, theta_p, phi_p, omega, q, k, kp, diag
+            )
+        return self._secondary_from_plasmon(
+            uvw_before, theta_p, phi_p, omega, q, k, kp, diag
+        )
+
+    # -- secondary construction ---------------------------------------
+    def _q_hat(self, uvw_before, theta_p, phi_p, k, kp):
+        """
+        Unit vector along the momentum transfer q = k - k'.
+
+        In the frame with z || k:
+            q_perp = k' sin(theta_p),  q_z = k - k' cos(theta_p),  azimuth = phi_p + pi
+        """
+        theta_q = math.atan2(kp * math.sin(theta_p), k - kp * math.cos(theta_p))
+        return rotate_direction(uvw_before, theta_q, (phi_p + math.pi) % (2.0 * math.pi))
+
+    def _secondary_from_binary_encounter(self, uvw_before, theta_p, phi_p,
+                                         omega, q, k, kp, diag):
+        smp = self.sample
+        target = smp.sample_target_electron(omega, q, self.rng, diag)
+        if target is None:
+            return None
+        r, kz = target
+
+        # Final state of the struck electron, in the frame with z || q:
+        #   k_f = k_i + q z_hat   ->   E_f = E_i + omega  exactly.
+        kfz = kz + q
+        E_se = 0.5 * (r * r + kfz * kfz) * H2EV
+
+        if self.cfg.se_direction_model == "isotropic":
+            uvw = _isotropic_direction(self.rng)
         else:
-            cos_phi, sin_phi = 1.0, 0.0
+            q_hat = self._q_hat(uvw_before, theta_p, phi_p, k, kp)
+            psi = 2.0 * math.pi * self.rng.random()      # azimuth about q
+            theta_f = math.atan2(r, kfz)
+            uvw = rotate_direction(q_hat, theta_f, psi)
 
-        h0 = sin_psi * cos_fi
-        h1 = sin_theta * cos_psi + h0 * cos_theta
-        h2 = sin_psi * sin_fi
+        return Secondary(E_se, uvw, list(self.xyz), self.generation + 1)
 
-        new_uvw[0] = h1 * cos_phi - h2 * sin_phi
-        new_uvw[1] = h1 * sin_phi + h2 * cos_phi
-        new_uvw[2] = cos_theta * cos_psi - h0 * sin_theta
-
-        norm = math.sqrt(new_uvw[0]**2 + new_uvw[1]**2 + new_uvw[2]**2)
-        if norm > 0:
-            new_uvw[0] /= norm
-            new_uvw[1] /= norm
-            new_uvw[2] /= norm
-        return new_uvw
-
-HBAR2_2M_eVA2 = 3.80998212  # ħ²/(2m) in eV·Å²  (electron)
-
-def _as_q_by_w(A, nq, nw):
-    """Return A as shape (nq, nw), accepting (nq,nw) or (nw,nq)."""
-    A = np.asarray(A, float)
-    if A.shape == (nq, nw):
-        return A
-    if A.shape == (nw, nq):
-        return A.T
-    raise ValueError(f"Expected diimfp shape (nq,nw) or (nw,nq); got {A.shape}")
-
-def _cdf_from_pdf(pdf, x):
-    pdf = np.clip(np.asarray(pdf, float), 0.0, np.inf)
-    x = np.asarray(x, float)
-    if pdf.size != x.size:
-        raise ValueError("pdf and x size mismatch")
-    if pdf.size < 2:
-        return None
-    dx = np.diff(x)
-    area = 0.5 * (pdf[1:] + pdf[:-1]) * dx
-    cdf = np.concatenate(([0.0], np.cumsum(area)))
-    tot = cdf[-1]
-    if not np.isfinite(tot) or tot <= 0.0:
-        return None
-    return cdf / tot
-
-def _sample_from_cdf(cdf, x, u):
-    j = np.searchsorted(cdf, u, side="right") - 1
-    j = int(np.clip(j, 0, len(x) - 2))
-    c0, c1 = cdf[j], cdf[j + 1]
-    x0, x1 = x[j], x[j + 1]
-    if c1 <= c0:
-        return float(x0)
-    t = (u - c0) / (c1 - c0)
-    return float(x0 + t * (x1 - x0))
-
-def projectile_q_bounds(E, w):
-    """
-    q bounds from projectile kinematics (free-electron dispersion):
-      q_- = |k - k'|, q_+ = k + k'
-    with k = sqrt(E / (ħ²/2m)) in Å^-1 when E in eV.
-    """
-    if w < 0.0:
-        return 0.0, 0.0
-    Ep = E - w
-    if Ep <= 0.0:
-        return 0.0, 0.0
-    k  = np.sqrt(max(E, 0.0)  / HBAR2_2M_eVA2)
-    kp = np.sqrt(max(Ep, 0.0) / HBAR2_2M_eVA2)
-    return abs(k - kp), (k + kp)
-
-class InelasticChannelSampler:
-    """
-    Uses DB keys:
-      q, omega
-      diimfp_pl, diimfp_se
-      inv_imfp_pl(E), inv_imfp_se(E)
-    """
-    def __init__(self, d):
-        self.d = d
-        self.q = np.asarray(d["q"], float)
-        self.w = np.asarray(d["omega"], float)
-        self.nq = self.q.size
-        self.nw = self.w.size
-
-        self.di_pl = _as_q_by_w(d["diimfp_pl"], self.nq, self.nw)
-        self.di_se = _as_q_by_w(d["diimfp_se"], self.nq, self.nw)
-
-    def sample(self, E, rng=np.random):
+    def _secondary_from_plasmon(self, uvw_before, theta_p, phi_p,
+                                omega, q, k, kp, diag):
         """
-        Return (channel, omega, q).
-        channel in {"pl","se"}.
+        Plasmon decay.  The plasmon carries q << k_F and decays by Landau
+        damping at a wavevector uncorrelated with the incident direction, so
+        the emitted direction is taken isotropic by default; the initial state
+        is drawn from the free-electron joint DOS.
         """
-        E = float(E)
-        if E <= self.w[0]:
-            return None
+        E_i = self.sample.sample_plasmon_target_energy(omega, self.rng)
+        E_se = E_i + omega
 
-        # ---- 1) channel selection: weights from inv_imfp_* at this E ----
-        Egrid = np.asarray(self.d["energy"], float)
-        inv_pl_arr = np.asarray(self.d["inv_imfp_pl"], float)
-        inv_se_arr = np.asarray(self.d["inv_imfp_se"], float)
-        inv_pl = float(np.interp(E, Egrid, inv_pl_arr))
-        inv_se = float(np.interp(E, Egrid, inv_se_arr))
+        if self.cfg.plasmon_se_direction == "isotropic":
+            uvw = _isotropic_direction(self.rng)
+        else:
+            q_hat = self._q_hat(uvw_before, theta_p, phi_p, k, kp)
+            k_i = math.sqrt(max(2.0 * E_i / H2EV, 0.0))
+            mu = 2.0 * self.rng.random() - 1.0
+            kz = k_i * mu + q
+            r = k_i * math.sqrt(max(1.0 - mu * mu, 0.0))
+            psi = 2.0 * math.pi * self.rng.random()
+            uvw = rotate_direction(q_hat, math.atan2(r, kz), psi)
 
-        s = inv_pl + inv_se
-        if not np.isfinite(s) or s <= 0.0:
-            return None
+        return Secondary(E_se, uvw, list(self.xyz), self.generation + 1)
 
-        u = rng.random()
-        ch = "pl" if (u < inv_pl / s) else "se"
-        di = self.di_pl if ch == "pl" else self.di_se
 
-        # ---- limit omega to <= E ----
-        iwmax = int(np.searchsorted(self.w, E, side="right") - 1)
-        iwmax = int(np.clip(iwmax, 0, self.nw - 1))
-        wgrid = self.w[:iwmax + 1]
-        di = di[:, :iwmax + 1]  # (nq, nw_eff)
+# --------------------------------------------------------------------------
+# Trajectory  (ONE implementation, shared by the serial and parallel paths)
+# --------------------------------------------------------------------------
+@dataclass
+class TrajectoryResult:
+    tey: int = 0
+    sey_cascade: int = 0        # split by "was born in the cascade"
+    bse_cascade: int = 0
+    sey_50ev: int = 0           # split by the conventional 50 eV emission cut
+    bse_50ev: int = 0
+    emissions: list = field(default_factory=list)
+    tracks: list = field(default_factory=list)
+    diagnostics: Diagnostics = field(default_factory=Diagnostics)
 
-        # ---- 2) sample omega from marginal dλ/dω = ∫ dq diimfp(q,ω) ----
-        dq = np.diff(self.q)
-        # trapz over q for each omega column
-        dlam_dw = np.sum(0.5 * (di[1:, :] + di[:-1, :]) * dq[:, None], axis=0)  # (nw_eff,)
 
-        cdf_w = _cdf_from_pdf(dlam_dw, wgrid)
-        if cdf_w is None:
-            return None
-        omega = _sample_from_cdf(cdf_w, wgrid, rng.random())
+def incident_direction(E0, sample: Sample, angle_rad):
+    """
+    Direction of the primary just inside the surface.
 
-        # ---- 3) sample q conditional on omega, restricted to [q-, q+] ----
-        # linear interp between nearest omega bins
-        j = int(np.searchsorted(wgrid, omega, side="right") - 1)
-        j = int(np.clip(j, 0, wgrid.size - 2))
-        w0, w1 = wgrid[j], wgrid[j + 1]
-        t = 0.0 if w1 <= w0 else (omega - w0) / (w1 - w0)
+    The barrier accelerates the electron from E0 to E_s = E0 + U_i while
+    conserving parallel momentum, so it is refracted towards the normal:
 
-        pdf_q = (1.0 - t) * di[:, j] + t * di[:, j + 1]  # (nq,)
+        sin(theta_solid) = sqrt(E0 / E_s) * sin(theta_vacuum)
 
-        qmin, qmax = projectile_q_bounds(E, omega)
-        i0 = int(np.searchsorted(self.q, qmin, side="left"))
-        i1 = int(np.searchsorted(self.q, qmax, side="right") - 1)
-        i0 = max(i0, 0)
-        i1 = min(i1, self.nq - 1)
-        if i1 <= i0:
-            return None
+    The previous version added U_i to the energy but kept the vacuum angle,
+    which only agrees at normal incidence.
+    """
+    E_s = E0 + sample.Ui
+    sin_in = math.sqrt(max(E0, 0.0) / E_s) * math.sin(angle_rad)
+    sin_in = min(sin_in, 1.0)
+    cos_in = math.sqrt(max(1.0 - sin_in * sin_in, 0.0))
+    return E_s, [sin_in, 0.0, cos_in]
 
-        qgrid = self.q[i0:i1 + 1]
-        pdfs  = pdf_q[i0:i1 + 1]
-        cdf_q = _cdf_from_pdf(pdfs, qgrid)
-        if cdf_q is None:
-            return None
-        q = _sample_from_cdf(cdf_q, qgrid, rng.random())
 
-        return ch, omega, q
-        
+def simulate_trajectory(sample: Sample, E0, angle_rad, rng, track=False):
+    """Transport one primary electron and its whole cascade."""
+    cfg = sample.cfg
+    res = TrajectoryResult()
+    diag = res.diagnostics
 
+    E_s, uvw0 = incident_direction(float(E0), sample, angle_rad)
+    queue = [Electron(sample, E_s, [0.0, 0.0, 0.0], uvw0,
+                      generation=0, is_cascade=False, rng=rng,
+                      save_coordinates=track)]
+
+    i = 0
+    while i < len(queue):
+        e = queue[i]
+        steps = 0
+
+        while True:
+            e.check_alive()
+            if e.dead:
+                break
+
+            steps += 1
+            if steps > cfg.max_steps_per_electron:
+                diag["step_limit_hit"] += 1
+                e.dead = True
+                break
+
+            hit_surface = e.travel()
+            if e.dead:
+                break
+
+            if hit_surface:
+                diag["surface_encounters"] += 1
+                if e.escape():
+                    diag["escapes"] += 1
+                    res.tey += 1
+                    if e.is_cascade:
+                        res.sey_cascade += 1
+                    else:
+                        res.bse_cascade += 1
+                    if e.energy < cfg.bse_cutoff_ev:
+                        res.sey_50ev += 1
+                    else:
+                        res.bse_50ev += 1
+                    if cfg.collect_spectra:
+                        res.emissions.append(
+                            Emission(e.energy, abs(e.uvw[2]), e.is_cascade,
+                                     e.generation, e.birth_depth)
+                        )
+                    break
+                diag["internal_reflections"] += 1
+                # KEY FIX: a step truncated at the surface produced no
+                # collision.  Draw a fresh free path instead of forcing one.
+                continue
+
+            secondary = e.scatter(diag)
+            if secondary is None:
+                continue
+
+            if secondary.generation > cfg.max_generation:
+                diag["generation_limit_hit"] += 1
+                continue
+            if len(queue) >= cfg.max_secondaries_per_trajectory:
+                continue
+            if secondary.energy <= sample.Ui and not cfg.track_subbarrier:
+                # Cannot escape a step barrier; tracking it changes no yield.
+                diag["se_below_barrier"] += 1
+                continue
+
+            diag["se_created"] += 1
+            queue.append(
+                Electron(sample, secondary.energy, secondary.xyz, secondary.uvw,
+                         generation=secondary.generation, is_cascade=True,
+                         rng=rng, save_coordinates=track)
+            )
+
+        if track:
+            res.tracks.append(e.coordinates)
+        queue[i] = None            # release the cascade as we go
+        i += 1
+
+    return res
+
+
+# --- multiprocessing plumbing --------------------------------------------
+_G = None
+
+
+def _init_worker(sample_name, db_path, config, angle_rad, track):
+    global _G
+    from types import SimpleNamespace
+    _G = SimpleNamespace(
+        sample=Sample(sample_name, db_path=db_path, config=config),
+        angle=float(angle_rad),
+        track=bool(track),
+    )
+
+
+def _worker_task(args):
+    E0, seed_entropy = args
+    rng = np.random.default_rng(np.random.SeedSequence(seed_entropy))
+    r = simulate_trajectory(_G.sample, E0, _G.angle, rng, track=_G.track)
+    return (r.tey, r.sey_cascade, r.bse_cascade, r.sey_50ev, r.bse_50ev,
+            r.emissions, r.tracks if _G.track else None, dict(r.diagnostics))
+
+
+# --------------------------------------------------------------------------
+# Driver
+# --------------------------------------------------------------------------
 class SEEMC:
-    def __init__(self, energy_array, sample_name, angle, n_traj, cb_ref=False, track=False, db_path='MaterialDatabase.pkl'):
+    """
+    Yields as a function of primary energy.
+
+    `cb_ref` is accepted for backwards compatibility but is not used by the
+    transport: the previous version stored it on every Electron and never read
+    it.  Pass a `MCConfig` instead to change model options.
+    """
+
+    def __init__(self, energy_array, sample_name, angle, n_traj,
+                 cb_ref=False, track=False, db_path="MaterialDatabase.pkl",
+                 config: Optional[MCConfig] = None, seed=12345):
         self.energy_array = np.asarray(energy_array, dtype=float)
-        self.sample = Sample(sample_name, db_path=db_path)
+        self.cfg = config or MCConfig()
+        self.cfg.validate()
+        self.sample = Sample(sample_name, db_path=db_path, config=self.cfg)
         self.n_trajectories = int(n_traj)
-        self.cb_ref = cb_ref
-        self.track_trajectories = track
         self.incident_angle = float(angle)
         self.db_path = db_path
+        self.track_trajectories = bool(track)
+        self.cb_ref = cb_ref
+        self.seed = int(seed)
 
-        self.tey = np.zeros(len(self.energy_array))
-        self.sey = np.zeros(len(self.energy_array))
-        self.bse = np.zeros(len(self.energy_array))
+        n = len(self.energy_array)
+        self.tey = np.zeros(n)
+        self.sey = np.zeros(n)          # cascade-flag split (delta)
+        self.bse = np.zeros(n)
+        self.sey_50ev = np.zeros(n)     # conventional 50 eV split
+        self.bse_50ev = np.zeros(n)
+        self.tey_err = np.zeros(n)
+        self.sey_err = np.zeros(n)
+        self.bse_err = np.zeros(n)
 
-        # only store tracks if requested
-        self.tracks = []  # list per energy if track=True
+        self.emissions = [[] for _ in range(n)]
+        self.tracks = []
+        self.diagnostics = Diagnostics()
 
-    def run_one_trajectory(self, E0, traj_id):
-        seed = (os.getpid() * 1_000_003 + traj_id) & 0xFFFFFFFF
-        rng = np.random.default_rng(seed)
+    def _seed_for(self, k, traj):
+        """Deterministic, PID-independent, collision-free by construction."""
+        return [self.seed, int(k), int(traj)]
 
-        traj_tracks = []
-        
-        tey = 0
-        sey = 0
-        bse = 0      
-    
-        electrons = []    
-        E_s0 = float(E0) + self.sample.Ui
-        
-        xyz=[0.0, 0.0, 0.0]
-        electrons.append(Electron(
-            self.sample,
-            E_s0,   # solid energy (VB-bottom reference)
-            self.cb_ref,
-            self.track_trajectories,
-            xyz=xyz,
-            uvw=[math.sin(self.incident_angle), 0, math.cos(self.incident_angle)],
-            gen=0,
-            se=False,
-            ind=-1,
-            rng=rng
-        ))
+    # ------------------------------------------------------------------
+    def run_simulation(self, use_parallel=False, progress=True):
+        """
+        Run all energies.  NOTE: `use_parallel=True` uses the 'spawn' start
+        method, so the calling code must be guarded:
 
-        i = 0
-        while i < len(electrons):
-            e = electrons[i]
-    
-            while e.inside and (not e.dead):
-                    
-                e.travel()
-                if e.dead:
-                    break
+            if __name__ == "__main__":
+                mc.run_simulation(use_parallel=True)
 
-                if e.escape():
-                    tey += 1
-                    if e.is_secondary:
-                        sey += 1
-                    else:
-                        bse += 1
-                    break
-    
-                e.get_scattering_type()
-                if e.dead:
-                    break
-    
-                made_inelastic = e.scatter()
-
-                if made_inelastic and e.energy_se > 0.0:
-                    se_energy = e.energy_loss + e.energy_se
-    
-                    # spawn criterion (metal): only above EF for this model
-                    if self.sample.is_metal and se_energy <= e.Ui:
-                        pass
-                    else:
-                        se_defl = [math.pi - e.deflection[0], (e.deflection[1] + math.pi) % (2*math.pi)]
-                        se_uvw = e.change_direction(e.uvw, se_defl)
-                        se_xyz = e.xyz.copy()
-                        electrons.append(Electron(
-                            self.sample, se_energy, self.cb_ref, self.track_trajectories,
-                            xyz=se_xyz, uvw=se_uvw, gen=e.generation + 1, se=True, ind=i, rng=rng
-                        ))
-    
-            if self.track_trajectories:
-                traj_tracks.append(e.coordinates)
-    
-            electrons[i] = None
-            i += 1
-
-        return tey, sey, bse, (traj_tracks if self.track_trajectories else None)
-
-
-    def run_simulation(self, use_parallel=False):
+        Serial and parallel runs with the same `seed` give bitwise-identical
+        yields: the per-trajectory stream is SeedSequence([seed, k, traj]),
+        which does not depend on process id or completion order.
+        """
         import time
-        import multiprocessing as mp
-        from tqdm import tqdm
-    
         t0 = time.time()
-    
-        # Serial path unchanged
-        if not use_parallel:
-            for k, E0 in enumerate(self.energy_array):
-                t_tey = t_sey = t_bse = 0
-                tracks_E = [] if self.track_trajectories else None
-    
-                for traj in tqdm(range(self.n_trajectories), desc=f"E={E0:.1f} eV"):
-                    tey, sey, bse, trk = self.run_one_trajectory(E0, traj)
-                    t_tey += tey
-                    t_sey += sey
-                    t_bse += bse
 
-                    if self.track_trajectories:
-                        tracks_E.append(trk)
-    
-                self.tey[k] = t_tey / self.n_trajectories
-                self.sey[k] = t_sey / self.n_trajectories
-                self.bse[k] = t_bse / self.n_trajectories
-                if self.track_trajectories:
-                    self.tracks.append(tracks_E)
-    
-            print(f"Done in {time.time() - t0:.1f} s")
-            return
-    
-        # Parallel path: one Pool for all energies + worker globals
-        nproc = mp.cpu_count()
-    
-        # Good default chunking: bigger chunks reduce overhead a lot
-        chunksize = max(1, self.n_trajectories // (nproc * 4))
-    
-        # IMPORTANT: if you run on Windows, you must keep this under:
-        # if __name__ == "__main__":
-        ctx = mp.get_context("spawn")  # safest cross-platform; use "fork" on Linux for slightly less overhead
-    
-        with ctx.Pool(
-            processes=nproc,
-            initializer=_init_worker,
-            initargs=(self.sample.name, self.db_path, self.incident_angle, self.cb_ref, self.track_trajectories),
-        ) as pool:
-    
+        try:
+            from tqdm import tqdm
+        except ImportError:                       # pragma: no cover
+            def tqdm(x, **kw):
+                return x
+
+        n_traj = self.n_trajectories
+
+        if use_parallel:
+            import multiprocessing as mp
+            ctx = mp.get_context("spawn")
+            nproc = mp.cpu_count()
+            chunksize = max(1, n_traj // (nproc * 8))
+            pool = ctx.Pool(
+                processes=nproc,
+                initializer=_init_worker,
+                initargs=(self.sample.name, self.db_path, self.cfg,
+                          self.incident_angle, self.track_trajectories),
+            )
+        else:
+            pool = None
+
+        try:
             for k, E0 in enumerate(self.energy_array):
-                # seed_base encodes energy so different energies don't reuse RNG streams
-                seed_base = (k * 1_000_000 + int(round(float(E0) * 10))) & 0xFFFFFFFF
-    
-                tasks = ((float(E0), traj, seed_base) for traj in range(self.n_trajectories))
-    
-                t_tey = t_sey = t_bse = 0
+                acc = np.zeros(5)          # tey, sey, bse, sey50, bse50
+                acc_sq = np.zeros(5)
                 tracks_E = [] if self.track_trajectories else None
-    
-                total_inelastic = 0
-                total_spawned = 0
-                max_cascade = 0
-                
-                for tey, sey, bse, trk in tqdm(
-                    pool.imap_unordered(_run_one_trajectory_worker, tasks, chunksize=chunksize),
-                    total=self.n_trajectories,
-                    desc=f"E={E0:.1f} eV",
-                ):
-                    t_tey += tey
-                    t_sey += sey
-                    t_bse += bse
-                    if self.track_trajectories:
+
+                if pool is None:
+                    it = (
+                        self._run_one(E0, k, traj)
+                        for traj in range(n_traj)
+                    )
+                else:
+                    tasks = ((float(E0), self._seed_for(k, traj))
+                             for traj in range(n_traj))
+                    it = pool.imap_unordered(_worker_task, tasks, chunksize=chunksize)
+
+                iterator = tqdm(it, total=n_traj, desc=f"E={E0:.1f} eV") if progress else it
+
+                for tey, sey, bse, sey50, bse50, emis, trk, diag in iterator:
+                    vals = np.array([tey, sey, bse, sey50, bse50], dtype=float)
+                    acc += vals
+                    acc_sq += vals * vals
+                    if self.cfg.collect_spectra:
+                        self.emissions[k].extend(emis)
+                    if self.track_trajectories and trk is not None:
                         tracks_E.append(trk)
-    
-                self.tey[k] = t_tey / self.n_trajectories
-                self.sey[k] = t_sey / self.n_trajectories
-                self.bse[k] = t_bse / self.n_trajectories
-                
+                    self.diagnostics.add(diag)
+
+                mean = acc / n_traj
+                var = np.maximum(acc_sq / n_traj - mean ** 2, 0.0)
+                sem = np.sqrt(var / n_traj)
+
+                self.tey[k], self.sey[k], self.bse[k] = mean[0], mean[1], mean[2]
+                self.sey_50ev[k], self.bse_50ev[k] = mean[3], mean[4]
+                self.tey_err[k], self.sey_err[k], self.bse_err[k] = sem[0], sem[1], sem[2]
+
                 if self.track_trajectories:
                     self.tracks.append(tracks_E)
-    
+        finally:
+            if pool is not None:
+                pool.close()
+                pool.join()
+
         print(f"Done in {time.time() - t0:.1f} s")
+        return self
 
-    def plot_yield(self):
+    def _run_one(self, E0, k, traj):
+        rng = np.random.default_rng(np.random.SeedSequence(self._seed_for(k, traj)))
+        r = simulate_trajectory(self.sample, float(E0), self.incident_angle,
+                                rng, track=self.track_trajectories)
+        return (r.tey, r.sey_cascade, r.bse_cascade, r.sey_50ev, r.bse_50ev,
+                r.emissions, r.tracks if self.track_trajectories else None,
+                dict(r.diagnostics))
+
+    # ------------------------------------------------------------------
+    def emission_spectrum(self, k, bins=100, e_max=None):
+        """Energy distribution of emitted electrons at energy index k."""
+        e = np.array([em.energy for em in self.emissions[k]], dtype=float)
+        if e.size == 0:
+            return np.zeros(bins), np.linspace(0, 1, bins + 1)
+        e_max = e_max if e_max is not None else float(np.percentile(e, 99.5))
+        counts, edges = np.histogram(e, bins=bins, range=(0.0, e_max))
+        return counts / self.n_trajectories, edges
+
+    def summary(self):
+        lines = [f"{self.sample.name}: {self.n_trajectories} trajectories/energy",
+                 f"{'E0 (eV)':>9} {'TEY':>10} {'+/-':>9} "
+                 f"{'SEY(<50eV)':>11} {'BSE(>50eV)':>11}"]
+        for k, E0 in enumerate(self.energy_array):
+            lines.append(
+                f"{E0:9.1f} {self.tey[k]:10.4f} {self.tey_err[k]:9.4f} "
+                f"{self.sey_50ev[k]:11.4f} {self.bse_50ev[k]:11.4f}"
+            )
+        lines.append("")
+        lines.append(self.diagnostics.report(self.n_trajectories * len(self.energy_array)))
+        return "\n".join(lines)
+
+    def plot_yield(self, use_50ev_split=True):
         import matplotlib.pyplot as plt
         plt.figure()
-        plt.plot(self.energy_array, self.tey, label="TEY")
-        plt.plot(self.energy_array, self.sey, label="SEY")
-        plt.plot(self.energy_array, self.bse, label="BSE")
-        plt.xlabel("Energy (eV)")
-        plt.ylabel("Yield")
+        plt.errorbar(self.energy_array, self.tey, yerr=self.tey_err,
+                     label="TEY", marker="o", capsize=3)
+        if use_50ev_split:
+            plt.plot(self.energy_array, self.sey_50ev, "s--", label="SEY (<50 eV)")
+            plt.plot(self.energy_array, self.bse_50ev, "^--", label="BSE (>50 eV)")
+        else:
+            plt.errorbar(self.energy_array, self.sey, yerr=self.sey_err,
+                         label="SEY (cascade)", marker="s")
+            plt.errorbar(self.energy_array, self.bse, yerr=self.bse_err,
+                         label="BSE (primary)", marker="^")
+        plt.xlabel("Primary energy (eV)")
+        plt.ylabel("Yield (electrons/primary)")
         plt.title(self.sample.name)
         plt.legend()
+        plt.grid(alpha=0.3)
         plt.show()
 
+
+# ==========================================================================
+# Validation.  Run these once per material before trusting a yield curve --
+# each one targets a specific class of bug that is invisible in the final
+# SEY curve but shifts it by tens of percent.
+# ==========================================================================
+def check_null_collisions(sample: Sample, E_s, n=200_000, seed=1):
+    """
+    (i) Every collision the transport loop starts must end in a real event.
+
+    A "null" collision -- free path consumed, nothing happened -- silently
+    lengthens the effective mean free path.  The old sampler produced one
+    every time omega or q sampling failed.  This should report 0.
+    """
+    rng = np.random.default_rng(seed)
+    diag = Diagnostics()
+    e = Electron(sample, E_s, [0, 0, 1e3], [0, 0, 1.0], rng=rng)
+    for _ in range(n):
+        e.energy = E_s
+        e.uvw = [0.0, 0.0, 1.0]
+        e.refresh_rates()
+        e.scatter(diag)
+
+    e.energy = E_s          # scatter() lowered it; reset before reading the rates
+    real = diag["elastic_events"] + diag["inelastic_events"]
+    null_frac = 1.0 - real / n
+    inel_frac = diag["inelastic_events"] / n
+    expected_inel = e.iimfp / e.itmfp if e.itmfp > 0 else float("nan")
+    return {
+        "null_fraction": null_frac,
+        "inelastic_fraction_measured": inel_frac,
+        "inelastic_fraction_expected": expected_inel,
+        "effective_imfp_inflation": (1.0 / (1.0 - null_frac)) if null_frac < 1 else np.inf,
+        "diagnostics": dict(diag),
+    }
+
+
+def check_energy_loss_spectrum(sample: Sample, E_s, n=200_000, bins=120, seed=2):
+    """
+    (ii) The sampled energy-loss distribution must reproduce the tabulated
+    DIIMFP, truncated at omega_max = E_s - E_F.
+
+    Compared through the CDF (Kolmogorov-Smirnov distance) and through the
+    mean energy loss rather than through a binned density: the omega tables
+    are log-spaced, so any linear histogram disagrees at the first and last
+    bin for reasons that have nothing to do with the sampler.  The mean loss
+    is the quantity that actually propagates into the yield -- it is the
+    stopping power per collision.
+    """
+    rng = np.random.default_rng(seed)
+    diag = Diagnostics()
+    losses = []
+    for _ in range(n):
+        ch = sample.choose_channel(E_s, rng)
+        if ch is None:
+            continue
+        w = sample.sample_energy_loss(ch, E_s, rng, diag)
+        if w is not None:
+            losses.append(w)
+    losses = np.sort(np.asarray(losses))
+    if losses.size == 0:
+        return {"n_sampled": 0, "ks_distance": np.nan, "mean_loss_error": np.nan}
+
+    # Reference pdf: linear blend of the two bracketing energy bins, exactly
+    # what the stochastic bin choice reproduces on average.
+    i, t = _bin_and_fraction(sample.Egrid, sample._clip_E(sample._imfp_abscissa(E_s)))
+    w_max = sample.omega_max(E_s)
+    grid = np.unique(np.concatenate([
+        np.asarray(sample.material_data["diimfp_se"], float)[:, 0, i],
+        np.linspace(0.0, w_max, 2000),
+    ]))
+    grid = grid[(grid >= 0.0) & (grid <= w_max)]
+
+    pdf = np.zeros_like(grid)
+    for key in ("diimfp_se", "diimfp_pl"):
+        tab = np.asarray(sample.material_data[key], float)
+        lo = np.interp(grid, tab[:, 0, i], tab[:, 1, i], left=0.0, right=0.0)
+        hi = np.interp(grid, tab[:, 0, i + 1], tab[:, 1, i + 1], left=0.0, right=0.0)
+        pdf += (1.0 - t) * lo + t * hi
+
+    cdf_ref = cumtrapz_numpy(pdf, grid)
+    total = float(cdf_ref[-1])
+    if total <= 0:
+        return {"n_sampled": int(losses.size), "ks_distance": np.nan,
+                "mean_loss_error": np.nan}
+    cdf_ref /= total
+
+    emp = np.arange(1, losses.size + 1) / losses.size
+    ref_at = np.interp(losses, grid, cdf_ref)
+    ks = float(np.max(np.abs(emp - ref_at)))
+    ks_crit = 1.36 / math.sqrt(losses.size)          # 95% critical value
+
+    trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+    mean_ref = float(trapz(pdf * grid, grid) / total)
+    mean_mc = float(losses.mean())
+
+    counts, edges = np.histogram(losses, bins=bins, range=(0.0, w_max), density=True)
+    return {"n_sampled": int(losses.size),
+            "ks_distance": ks, "ks_critical_95": ks_crit, "ks_pass": ks < ks_crit,
+            "mean_loss_mc": mean_mc, "mean_loss_table": mean_ref,
+            "mean_loss_error": (mean_mc - mean_ref) / mean_ref,
+            "omega": 0.5 * (edges[1:] + edges[:-1]), "sampled": counts,
+            "pdf_grid": grid, "pdf_ref": pdf / total}
+
+
+def check_escape_probability(sample: Sample, E_s, n=200_000, seed=3):
+    """
+    (iii) Barrier test, decoupled from transport.  Release electrons at the
+    surface with isotropic directions and compare the escaped fraction with
+
+        P = (1/2) * integral_0^1 T(E_s mu^2) d mu
+
+    This exercises the transmission coefficient, the parallel-momentum
+    refraction and the reflection bookkeeping without any table lookups.
+    """
+    rng = np.random.default_rng(seed)
+    escaped = 0
+    for _ in range(n):
+        uvw = _isotropic_direction(rng)
+        e = Electron(sample, E_s, [0.0, 0.0, 0.0], uvw, rng=rng)
+        if uvw[2] < 0 and e.escape():
+            escaped += 1
+
+    mu = np.linspace(0.0, 1.0, 20001)
+    Eperp = E_s * mu * mu
+    T = np.zeros_like(mu)
+    ok = Eperp > sample.Ui
+    root = np.sqrt(1.0 - sample.Ui / Eperp[ok])
+    T[ok] = 4.0 * root / (1.0 + root) ** 2
+    integ = np.trapezoid(T, mu) if hasattr(np, "trapezoid") else np.trapz(T, mu)
+    analytic = 0.5 * integ
+
+    mc = escaped / n
+    err = math.sqrt(max(mc * (1 - mc), 0.0) / n)
+    return {"monte_carlo": mc, "analytic": analytic, "sigma": err,
+            "pulls": (mc - analytic) / err if err > 0 else np.nan}
+
+
+def check_collision_kinematics(sample: Sample, E_s, n=20_000, seed=4):
+    """
+    (iv) Energy and momentum bookkeeping of the inelastic vertex.
+
+    Checks, per event:
+      * q lies inside [|k - k'|, k + k']            (q-bound consistency)
+      * |k u_before - k' u_after| equals q          (the q-hat construction)
+      * E_SE = E_i + omega for the binary-encounter channel
+    """
+    rng = np.random.default_rng(seed)
+    diag = Diagnostics()
+    worst_q, worst_vec, worst_e = 0.0, 0.0, 0.0
+    n_checked = 0
+
+    for _ in range(n):
+        e = Electron(sample, E_s, [0.0, 0.0, 1e3], [0.0, 0.0, 1.0], rng=rng)
+        ch = sample.choose_channel(E_s, rng)
+        if ch is None:
+            continue
+        omega = sample.sample_energy_loss(ch, E_s, rng, diag)
+        if omega is None:
+            continue
+        qres = sample.sample_q(ch, E_s, omega, rng, diag)
+        if qres is None:
+            continue
+        q, k, kp = qres
+        n_checked += 1
+
+        worst_q = max(worst_q, max(abs(k - kp) - q, q - (k + kp), 0.0) / q)
+
+        cos_tp = min(1.0, max(-1.0, (k * k + kp * kp - q * q) / (2 * k * kp)))
+        tp = math.acos(cos_tp)
+        phip = 2 * math.pi * rng.random()
+        u0 = [0.0, 0.0, 1.0]
+        u1 = rotate_direction(u0, tp, phip)
+        qvec = np.array(u0) * k - np.array(u1) * kp
+        worst_vec = max(worst_vec, abs(np.linalg.norm(qvec) - q) / q)
+
+        q_hat = e._q_hat(u0, tp, phip, k, kp)
+        worst_vec = max(worst_vec, float(np.linalg.norm(
+            qvec / np.linalg.norm(qvec) - np.array(q_hat))))
+
+        if ch == "se":
+            t = sample.sample_target_electron(omega, q, rng, diag)
+            if t is not None:
+                r, kz = t
+                E_i = 0.5 * (r * r + kz * kz) * H2EV
+                E_f = 0.5 * (r * r + (kz + q) ** 2) * H2EV
+                worst_e = max(worst_e, abs(E_f - (E_i + omega)) / max(omega, 1e-9))
+
+    return {"n_checked": n_checked,
+            "max_q_bound_violation": worst_q,
+            "max_q_vector_error": worst_vec,
+            "max_energy_closure_error": worst_e,
+            "diagnostics": dict(diag)}
+
+
+def run_all_checks(sample: Sample, energies=(50.0, 200.0, 1000.0), verbose=True):
+    out = {}
+    if verbose:
+        print(sample.consistency_report())
+        print()
+    for E_vac in energies:
+        E_s = E_vac + sample.Ui
+        res = {
+            "null": check_null_collisions(sample, E_s, n=50_000),
+            "loss": check_energy_loss_spectrum(sample, E_s, n=50_000),
+            "escape": check_escape_probability(sample, E_s, n=50_000),
+            "kinematics": check_collision_kinematics(sample, E_s, n=5_000),
+        }
+        out[E_vac] = res
+        if verbose:
+            print(f"E_vac = {E_vac:g} eV  (E_s = {E_s:g} eV)")
+            print(f"  null collision fraction     : {res['null']['null_fraction']:.4%}")
+            print(f"  inelastic fraction meas/exp : "
+                  f"{res['null']['inelastic_fraction_measured']:.4f} / "
+                  f"{res['null']['inelastic_fraction_expected']:.4f}")
+            print(f"  loss spectrum KS / crit     : "
+                  f"{res['loss']['ks_distance']:.4f} / {res['loss']['ks_critical_95']:.4f}"
+                  f"  {'PASS' if res['loss']['ks_pass'] else 'FAIL'}")
+            print(f"  mean loss MC / table        : "
+                  f"{res['loss']['mean_loss_mc']:.3f} / {res['loss']['mean_loss_table']:.3f} eV "
+                  f"({res['loss']['mean_loss_error']:+.3%})")
+            print(f"  escape prob MC / analytic   : "
+                  f"{res['escape']['monte_carlo']:.5f} / {res['escape']['analytic']:.5f} "
+                  f"({res['escape']['pulls']:+.2f} sigma)")
+            print(f"  q-bound violation           : {res['kinematics']['max_q_bound_violation']:.2e}")
+            print(f"  q-vector construction error : {res['kinematics']['max_q_vector_error']:.2e}")
+            print(f"  energy closure error        : {res['kinematics']['max_energy_closure_error']:.2e}")
+            print()
+    return out
