@@ -63,6 +63,22 @@ class OptFit:
         # neff_targets: [(E_max_eV, target_Neff, weight), ...]
         self.neff_targets = None
         self.neff_coef = 0.0
+
+        # --- per-oscillator bound overrides ------------------------------
+        # set_bounds applies one uniform bound to every oscillator, which
+        # means the optimiser is free to move any oscillator anywhere in
+        # [e_gap, 500] eV. In practice it evacuates the low-loss region:
+        # that region carries ~0.02% of the f-sum rule and a negligible
+        # share of an unweighted ELF residual, so nothing rewards keeping
+        # an oscillator there -- even though it governs the entire optical
+        # response. Overriding the bounds for a single index pins one
+        # oscillator into the optical window so it cannot be deleted.
+        #
+        #   fit.bound_overrides['omega'][0] = (0.5, 4.0)
+        #   fit.bound_overrides['gamma'][0] = (0.05, 1.0)
+        #
+        # or use pin_optical_oscillator() below.
+        self.bound_overrides = {'A': {}, 'gamma': {}, 'omega': {}}
         
     def set_bounds(self):
         osc = self.material.oscillators
@@ -80,6 +96,21 @@ class OptFit:
         osc_max_gamma = np.ones(n_osc) * 100
         osc_max_omega = np.ones(n_osc) * 500
 
+        # Apply per-oscillator overrides (see self.bound_overrides).
+        _arrays = {'A': (osc_min_A, osc_max_A),
+                   'gamma': (osc_min_gamma, osc_max_gamma),
+                   'omega': (osc_min_omega, osc_max_omega)}
+        for key, per_index in (self.bound_overrides or {}).items():
+            if key not in _arrays:
+                raise InputError(f"bound_overrides key must be 'A', 'gamma' or 'omega', got {key!r}")
+            lo_arr, hi_arr = _arrays[key]
+            for idx, (lo, hi) in per_index.items():
+                if not 0 <= idx < n_osc:
+                    raise InputError(f"bound_overrides['{key}'] index {idx} out of range for {n_osc} oscillators")
+                if lo > hi:
+                    raise InputError(f"bound_overrides['{key}'][{idx}] has lower bound above upper bound")
+                lo_arr[idx], hi_arr[idx] = lo, hi
+
         if osc.model == 'MLL':
             osc_min_U, osc_max_U = 0.0, 10.0
             self.lb = np.concatenate([osc_min_A, osc_min_gamma, osc_min_omega, [osc_min_U]])
@@ -93,6 +124,28 @@ class OptFit:
         else:
             self.lb = np.concatenate([osc_min_A, osc_min_gamma, osc_min_omega])
             self.ub = np.concatenate([osc_max_A, osc_max_gamma, osc_max_omega])
+
+    def pin_optical_oscillator(self, index=0, omega_range=(0.5, 4.0),
+                               gamma_range=(0.05, 1.0), A_range=None):
+        """
+        Confine one oscillator to the optical window so the fit cannot
+        evacuate or over-broaden it.
+
+        Defaults target a metal interband onset: omega in [0.5, 4] eV
+        (Au's 5d->6s edge is ~2.4 eV; visible light is 1.65-3.10 eV) and
+        gamma in [0.05, 1.0] eV. The narrow gamma ceiling matters as much as
+        the omega range: a broad low-energy oscillator smears absorption far
+        below its centre and inflates eps2 where a real metal is close to
+        transparent.
+
+        Make sure the corresponding start values lie inside these bounds --
+        nlopt rejects an out-of-bounds x0 (run_optimisation warns and clips).
+        """
+        self.bound_overrides['omega'][index] = tuple(omega_range)
+        self.bound_overrides['gamma'][index] = tuple(gamma_range)
+        if A_range is not None:
+            self.bound_overrides['A'][index] = tuple(A_range)
+        return self.bound_overrides
 
     def struct2vec(self, osc_struct):
         osc = osc_struct.oscillators
