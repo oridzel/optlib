@@ -90,6 +90,7 @@ from __future__ import annotations
 import math
 import os
 import pickle
+import warnings
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
@@ -113,18 +114,51 @@ h2ev = H2EV
 a0 = A0_ANG
 HBAR2_2M_eVA2 = HBAR2_2M_EVA2
 
+# If optlib is installed, ADOPT its constants rather than argue with them: the
+# DIIMFP/ELF tables were integrated using optlib's values, so the sampler must
+# use the same numbers.  Self-consistency with the database matters more than
+# agreement with the newest CODATA digits -- a 1e-5 difference in the Hartree
+# is far below every other approximation in this model.
+#
+# The tolerances distinguish two very different situations:
+#   * a rounding-level difference (h2ev = 27.21184 vs 27.211386...) -> adopt silently
+#   * a genuinely different constant (Rydberg for Hartree, nm or m for Angstrom,
+#     or a0 = 1 in atomic units) -> fatal, because it would silently corrupt
+#     every q conversion in the code
+_ADOPT_QUIETLY = 1e-4      # below this: same constant, different rounding
+_FATAL_MISMATCH = 1e-2     # above this: a different constant entirely
+
 try:  # pragma: no cover - depends on installation
     from optlib import constants as _optlib_constants
-
-    for _name, _local in (("h2ev", H2EV), ("a0", A0_ANG)):
-        _ref = getattr(_optlib_constants, _name, None)
-        if _ref is not None and not math.isclose(float(_ref), _local, rel_tol=1e-6):
-            raise ValueError(
-                f"optlib.constants.{_name} = {_ref} disagrees with seemc's "
-                f"{_local}. Unit conventions must match; refusing to guess."
-            )
 except ImportError:
-    pass
+    _optlib_constants = None
+
+if _optlib_constants is not None:
+    _adopted = {}
+    for _name, _mine in (("h2ev", H2EV), ("a0", A0_ANG)):
+        _ref = getattr(_optlib_constants, _name, None)
+        if _ref is None:
+            continue
+        _rel = abs(float(_ref) - _mine) / _mine
+        if _rel > _FATAL_MISMATCH:
+            raise ValueError(
+                f"optlib.constants.{_name} = {_ref} differs from the expected "
+                f"{_mine} by {_rel:.1%}. That is a different constant, not a "
+                f"different rounding (Rydberg vs Hartree, or nm/m vs Angstrom). "
+                f"Fix the unit convention rather than the tolerance."
+            )
+        if _rel > _ADOPT_QUIETLY:
+            warnings.warn(
+                f"Adopting optlib.constants.{_name} = {_ref} in place of "
+                f"{_mine} ({_rel:.2e} relative difference).",
+                RuntimeWarning, stacklevel=2,
+            )
+        _adopted[_name] = float(_ref)
+
+    H2EV = _adopted.get("h2ev", H2EV)
+    A0_ANG = _adopted.get("a0", A0_ANG)
+    HBAR2_2M_EVA2 = 0.5 * H2EV * A0_ANG ** 2   # derived, never imported
+    h2ev, a0, HBAR2_2M_eVA2 = H2EV, A0_ANG, HBAR2_2M_EVA2
 
 
 # --------------------------------------------------------------------------
