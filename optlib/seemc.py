@@ -178,6 +178,37 @@ class MCConfig:
     # --- elastic ---
     elastic_min_energy: float = 5.0      # ELSEPA tables clamped below this (eV, vacuum ref)
 
+    # --- surface barrier ---
+    # 'quantum'  : T = 4r/(1+r)^2, r = sqrt(1 - Ui/E_perp).  Physically right for
+    #              an abrupt step, and what most SEE codes use.
+    # 'classical': T = 1 whenever E_perp > Ui.  Included because it is the other
+    #              common choice and because the two differ by ~25% in SEY --
+    #              a spectrum-averaged factor 0.73 for Cu.  Use it to check
+    #              whether a reference code's higher yield is a barrier-model
+    #              difference rather than a transport difference.
+    barrier_model: str = "quantum"
+
+    # --- FEG parameters used by the binary-encounter SE model ---
+    # k_F for the struck-electron sampling is normally taken from the DB's
+    # e_fermi.  For a d-band metal that is often WRONG: optlib's Penn/FPA
+    # extension disperses the ELF using an electron density inferred from the
+    # f-sum rule (for Cu that is ~11 e/atom, E_F ~ 35 eV), while `e_fermi` in
+    # the DB is the true Fermi energy (~8.7 eV, ~1 e/atom).  If those disagree,
+    # the pair continuum implied by the ELF is much wider than the one the
+    # sampler enforces, and a large fraction of (omega, q) pairs get Pauli
+    # rejected -- each rejection is a secondary electron that never existed.
+    # Set this to the density-equivalent E_F to make them consistent.
+    feg_fermi_energy: Optional[float] = None
+
+    # What to do when the FEG kinematics forbid the sampled (omega, q):
+    # 'fallback' : still create a secondary, with E_SE = E_i + omega drawn from
+    #              the occupied DOS (the plasmon-channel construction).  Energy
+    #              is conserved and no excitation is lost.
+    # 'drop'     : create no secondary (the previous behaviour).  The projectile
+    #              still loses omega, so this is a silent energy sink and a
+    #              direct SEY deficit.
+    on_pauli_block: str = "fallback"
+
     # --- secondary electron generation ---
     # 'momentum' : SE direction from k_f = k_i + q, rotated out of the q frame.
     # 'isotropic': SE emitted isotropically (debug / comparison only).
@@ -217,6 +248,10 @@ class MCConfig:
             raise ValueError(f"bad se_direction_model: {self.se_direction_model}")
         if self.plasmon_se_direction not in ("momentum", "isotropic"):
             raise ValueError(f"bad plasmon_se_direction: {self.plasmon_se_direction}")
+        if self.barrier_model not in ("quantum", "classical"):
+            raise ValueError(f"bad barrier_model: {self.barrier_model}")
+        if self.on_pauli_block not in ("fallback", "drop"):
+            raise ValueError(f"bad on_pauli_block: {self.on_pauli_block}")
 
 
 # --------------------------------------------------------------------------
@@ -332,6 +367,7 @@ class Diagnostics(dict):
         "internal_reflections",
         "se_created",
         "se_blocked_pauli",       # FEG kinematics forbade a target state
+        "se_pauli_fallback",      # ... and a DOS-based secondary was made instead
         "se_below_barrier",       # SE created but cannot escape -> not tracked
         "omega_cdf_empty",        # energy bin had no inelastic strength
         "q_window_clipped",       # [q-, q+] extended past the tabulated q grid
@@ -397,6 +433,16 @@ class Sample:
         self.work_function = float(md.get("work_function", 0.0))
         self.Ui = self.e_fermi + self.work_function     # VB bottom -> vacuum level
         self.e_vb = float(md.get("e_vb", 0.0))
+
+        # Fermi energy used ONLY by the binary-encounter SE kinematics.  Kept
+        # separate from self.e_fermi (which sets omega_max and the barrier)
+        # because for a d-band metal they legitimately differ -- see
+        # MCConfig.feg_fermi_energy.
+        self.e_fermi_feg = float(
+            self.cfg.feg_fermi_energy if self.cfg.feg_fermi_energy is not None
+            else self.e_fermi
+        )
+        self.k_fermi_feg = math.sqrt(max(2.0 * self.e_fermi_feg / H2EV, 0.0))
 
         self.imfp_table = np.asarray(md["imfp"], dtype=float)
         self.emfp_table = np.asarray(md["emfp"], dtype=float)
@@ -759,7 +805,7 @@ class Sample:
         if q_a0inv <= 0.0:
             return None
         omega_h = omega / H2EV
-        kF = math.sqrt(max(2.0 * self.e_fermi / H2EV, 0.0))
+        kF = self.k_fermi_feg
         q = float(q_a0inv)
 
         kz = (2.0 * omega_h - q * q) / (2.0 * q)
@@ -787,7 +833,7 @@ class Sample:
         [0, E_F].  Rejection sampling (the old code rebuilt a 400-point
         trapezoid CDF on every single plasmon event).
         """
-        e_ref = self.e_fermi if self.is_metal else self.e_vb
+        e_ref = self.e_fermi_feg if self.is_metal else self.e_vb
         e_ref = max(e_ref, 1e-6)
         f_max = math.sqrt(e_ref * (e_ref + omega))
         if f_max <= 0.0:
@@ -931,12 +977,13 @@ class Electron:
             self._reflect()
             return False
 
-        # Step-barrier transmission, T = 4 k1z k2z / (k1z + k2z)^2
-        root = math.sqrt(1.0 - self.Ui / E_perp)
-        T = 4.0 * root / ((1.0 + root) ** 2)
-        if self.rng.random() >= T:
-            self._reflect()
-            return False
+        if self.cfg.barrier_model == "quantum":
+            # Step-barrier transmission, T = 4 k1z k2z / (k1z + k2z)^2
+            root = math.sqrt(1.0 - self.Ui / E_perp)
+            T = 4.0 * root / ((1.0 + root) ** 2)
+            if self.rng.random() >= T:
+                self._reflect()
+                return False
 
         Ev = Es - self.Ui
         # Parallel momentum is conserved; E_perp > U_i already guarantees a
@@ -1042,7 +1089,17 @@ class Electron:
         smp = self.sample
         target = smp.sample_target_electron(omega, q, self.rng, diag)
         if target is None:
-            return None
+            if self.cfg.on_pauli_block == "drop":
+                return None
+            # The ELF said this (omega, q) carries single-particle strength but
+            # the FEG kinematics say no state is available -- i.e. the model
+            # used to disperse the ELF and the model used here disagree.
+            # Dropping the secondary would destroy the excitation while keeping
+            # the energy loss, so fall back to the DOS construction instead.
+            diag["se_pauli_fallback"] += 1
+            return self._secondary_from_plasmon(
+                uvw_before, theta_p, phi_p, omega, q, k, kp, diag
+            )
         r, kz = target
 
         # Final state of the struck electron, in the frame with z || q:
@@ -1531,8 +1588,11 @@ def check_escape_probability(sample: Sample, E_s, n=200_000, seed=3):
     Eperp = E_s * mu * mu
     T = np.zeros_like(mu)
     ok = Eperp > sample.Ui
-    root = np.sqrt(1.0 - sample.Ui / Eperp[ok])
-    T[ok] = 4.0 * root / (1.0 + root) ** 2
+    if sample.cfg.barrier_model == "quantum":
+        root = np.sqrt(1.0 - sample.Ui / Eperp[ok])
+        T[ok] = 4.0 * root / (1.0 + root) ** 2
+    else:
+        T[ok] = 1.0
     integ = np.trapezoid(T, mu) if hasattr(np, "trapezoid") else np.trapz(T, mu)
     analytic = 0.5 * integ
 
