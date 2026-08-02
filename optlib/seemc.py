@@ -729,6 +729,17 @@ class Sample:
         self._elastic_theta = theta
         self._elastic_cdf = cdf
 
+    def mean_cos_elastic(self, E_s):
+        """<cos theta> of the elastic DCS, for the transport MFP."""
+        trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+        i, t = _bin_and_fraction(self.Egrid, self._clip_E(self._emfp_abscissa(E_s)))
+        th = self._elastic_theta
+        decs = np.asarray(self.material_data["decs"], float)
+        d = (1.0 - t) * decs[:, i] + t * decs[:, i + 1]
+        pdf = 2.0 * np.pi * d * np.sin(th)
+        norm = trapz(pdf, th)
+        return float(trapz(pdf * np.cos(th), th) / norm) if norm > 0 else 0.0
+
     def sample_elastic_theta(self, E_s, rng):
         """Sample the elastic polar deflection, interpolating between energy bins."""
         i, t = _bin_and_fraction(self.Egrid, self._clip_E(self._emfp_abscissa(E_s)))
@@ -2105,15 +2116,33 @@ def report_low_energy_transport(sample: Sample, energies=None):
     print(f"Low-energy transport for {sample.name}")
     print(f"  E_F = {sample.e_fermi:.2f} eV, U_i = {sample.Ui:.2f} eV "
           f"(escape needs E_s > U_i)")
-    print(f"  {'E_s (eV)':>9} {'E-E_F':>8} {'IMFP (A)':>10} {'dE/ds (eV/A)':>13} "
-          f"{'mean loss':>10}")
+    print(f"  {'E_s':>7} {'E_vac':>7} {'IMFP':>8} {'EMFP':>7} {'<cos>':>7} "
+          f"{'l_tr':>7} {'l_diff':>7} {'dE/ds':>7} {'loss':>7}")
+    print(f"  {'(eV)':>7} {'(eV)':>7} {'(A)':>8} {'(A)':>7} {'':>7} "
+          f"{'(A)':>7} {'(A)':>7} {'eV/A':>7} {'eV':>7}")
+    clamp = sample.cfg.elastic_min_energy
     for E in energies:
         r = stopping_power(sample, float(E))
-        print(f"  {E:9.1f} {E - sample.e_fermi:8.1f} {r['imfp']:10.2f} "
-              f"{r['dEds']:13.3f} {r['mean_loss']:10.2f}")
-    print("\n  A too-SHORT IMFP at 15-50 eV absorbs secondaries before they")
-    print("  reach the surface, lowering delta and pulling delta_max to lower")
-    print("  primary energy -- the signature you are seeing.")
+        emfp = sample.get_emfp(float(E))
+        mu = sample.mean_cos_elastic(float(E))
+        l_tr = emfp / max(1.0 - mu, 1e-6)
+        lam_in = r["imfp"]
+        l_diff = (math.sqrt(lam_in * l_tr / 3.0)
+                  if np.isfinite(lam_in) and lam_in > 0 else float("nan"))
+        mark = " *" if (E - sample.Ui) < clamp else ""
+        print(f"  {E:7.1f} {E - sample.Ui:7.1f} {lam_in:8.2f} {emfp:7.2f} "
+              f"{mu:7.3f} {l_tr:7.2f} {l_diff:7.2f} {r['dEds']:7.3f} "
+              f"{r['mean_loss']:7.2f}{mark}")
+    print(f"\n  * = E_vac below cfg.elastic_min_energy ({clamp:g} eV), so the")
+    print(f"      elastic DCS is FROZEN at its {clamp:g} eV value. Every secondary")
+    print(f"      with E_s < {sample.Ui + clamp:.1f} eV shares one elastic MFP -- and those")
+    print( "      are exactly the electrons that carry delta.")
+    print( "  l_diff = sqrt(IMFP * l_tr / 3) is the diffusion estimate of the SE")
+    print( "      escape depth; compare it with escape_depth_analysis().")
+    print("\n  If l_diff greatly exceeds the measured escape depth, the SE escape")
+    print("  is NOT diffusion-limited by these MFPs and something else (barrier,")
+    print("  angular distribution) dominates. If they agree, the escape depth is")
+    print("  set by whichever of IMFP / l_tr is smaller at 15-30 eV.")
 
 
 def escape_depth_analysis(sample: Sample, E0, n_traj=400, seed=5, nbins=14, zmax=None):
@@ -2148,7 +2177,12 @@ def escape_depth_analysis(sample: Sample, E0, n_traj=400, seed=5, nbins=14, zmax
         return {"n_created": 0}
 
     if zmax is None:
-        zmax = float(np.percentile(created, 90))
+        # Bin over the range where escapes actually occur. Using the CREATED
+        # distribution instead makes the bins ~26 A wide at 3 keV, far coarser
+        # than the decay length, and the fitted lambda then measures noise.
+        zmax = (float(np.percentile(escaped, 97)) if escaped.size > 20
+                else float(np.percentile(created, 20)))
+        zmax = max(zmax, 4.0)
     edges = np.linspace(0.0, zmax, nbins + 1)
     c, _ = np.histogram(created, bins=edges)
     e, _ = np.histogram(escaped, bins=edges)
