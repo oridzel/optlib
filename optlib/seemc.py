@@ -2208,3 +2208,88 @@ def escape_depth_analysis(sample: Sample, E0, n_traj=400, seed=5, nbins=14, zmax
           f"{np.median(escaped) if escaped.size else float('nan'):.2f} A")
     return {"z": z, "created": c, "escaped": e, "P": P, "lambda": lam,
             "n_created": created.size, "n_escaped": escaped.size}
+
+
+def check_elastic_consistency(sample: Sample, nn_distance=None):
+    """
+    (vii) Sanity checks on the ELSEPA-derived elastic tables.
+
+    Three independent things are tested:
+
+    1. Is the EMFP ever shorter than an interatomic distance?  Below roughly
+       one nearest-neighbour spacing the independent-atom / muffin-tin picture
+       has broken down: the electron cannot be said to scatter from one atom at
+       a time.  Values there should be treated as an extrapolation artifact,
+       not as physics, and they dominate the SE escape depth.
+
+    2. Does <cos theta> derived from the DECS table agree with ELSEPA's own
+       transport cross-section?  optlib computes both -- sigma_el and sigma_tr
+       come from the ELSEPA header, while decs is the tabulated angular
+       distribution -- so
+              1 - sigma_tr/sigma_el  ==  <cos theta>_DECS
+       is a closed consistency check on the parsing. A mismatch means the
+       angular table and the cross sections describe different things.
+
+    3. Where is the DCS frozen by the low-energy clamp, and how many of the
+       secondaries that carry delta fall in that region?
+    """
+    md = sample.material_data
+    Eg = sample.Egrid
+    emfp = sample.emfp_table
+
+    print(f"Elastic consistency for {sample.name}")
+
+    # --- 1. unphysically short mean free paths
+    if nn_distance is None:
+        n = md.get("atomic_density")
+        nn_distance = (1.0 / n) ** (1.0 / 3.0) if n else None
+    bad = np.where(emfp < (nn_distance if nn_distance else 1.5))[0]
+    if nn_distance:
+        print(f"  atomic density gives a mean spacing of {nn_distance:.2f} A")
+    else:
+        print("  no atomic_density in DB; using 1.5 A as the plausibility floor")
+    if bad.size:
+        print(f"  !! EMFP is below that spacing at {bad.size} grid point(s), "
+              f"E = {Eg[bad[0]]:.1f} - {Eg[bad[-1]]:.1f} eV "
+              f"(min EMFP = {emfp.min():.2f} A)")
+        print("     The independent-atom model does not apply there.")
+    else:
+        print("  EMFP exceeds the mean atomic spacing everywhere: OK")
+
+    # --- 2. DECS vs ELSEPA transport cross section
+    trmfp = md.get("trmfp")
+    if trmfp is not None:
+        trmfp = np.asarray(trmfp, float)
+        print(f"\n  {'E (eV)':>9} {'<cos>_DECS':>11} {'<cos>_sigma':>12} {'diff':>9}")
+        worst = 0.0
+        for i in range(0, len(Eg), max(1, len(Eg) // 12)):
+            mu_decs = sample.mean_cos_elastic(
+                Eg[i] + (sample.Ui if sample.cfg.emfp_energy_ref == "vacuum" else 0.0))
+            mu_sig = 1.0 - emfp[i] / trmfp[i] if trmfp[i] > 0 else float("nan")
+            d = abs(mu_decs - mu_sig)
+            worst = max(worst, d if np.isfinite(d) else 0.0)
+            print(f"  {Eg[i]:9.1f} {mu_decs:11.3f} {mu_sig:12.3f} {d:9.3f}")
+        print(f"\n  worst |difference| = {worst:.3f}")
+        if worst > 0.05:
+            print("  !! The DECS table and the tabulated cross sections disagree.")
+            print("     One of them is not what seemc assumes it is.")
+    else:
+        print("\n  No 'trmfp' in the DB. optlib's ElsepaWrapper computes it "
+              "(mat.trmfp),\n  so adding it to the database would enable a "
+              "direct check of the DECS\n  table against ELSEPA's own transport "
+              "cross section.")
+
+    # --- 3. the clamp
+    clamp = sample.cfg.elastic_min_energy
+    ref = sample.cfg.emfp_energy_ref
+    frozen_below = sample.Ui + clamp if ref == "vacuum" else clamp
+    print(f"\n  emfp_energy_ref = '{ref}', elastic_min_energy = {clamp:g} eV")
+    print(f"  => every electron with E_s < {frozen_below:.1f} eV uses the same "
+          f"elastic DCS")
+    print(f"  => EMFP there = {sample.get_emfp(frozen_below - 0.1):.2f} A")
+    print("\n  IMPORTANT: optlib's ElsepaWrapper.write_input_files() writes the")
+    print("  energies it is handed straight into 'EV' with no shift, so the")
+    print("  reference of the emfp table is whatever array the DB builder passed.")
+    print("  If that was the same grid used for the IMFP (VB-bottom referenced),")
+    print("  then emfp is ALSO VB-bottom referenced and subtracting U_i here is a")
+    print("  double correction. Test it with MCConfig(emfp_energy_ref='vb_bottom').")
