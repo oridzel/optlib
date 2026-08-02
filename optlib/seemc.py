@@ -182,16 +182,15 @@ class MCConfig:
     # 'abrupt'   : T = 4r/(1+r)^2, r = sqrt(1 - Ui/E_perp).  Abrupt step.
     #              ('quantum' is accepted as a synonym.)
     # 'classical': T = 1 whenever E_perp > Ui.
-    # 'sigmoid'  : JMONSEL's barrier (Villarrubia 2015 Eq. 11).  The potential
-    #              rises as U(x) = dU / [1 + exp(-2x/w)] over a width w, and
-    #              Schroedinger's equation is solved exactly:
-    #                  T = 1 - [sinh(pi w (k1-k2)/2) / sinh(pi w (k1+k2)/2)]^2
-    #              w -> 0 recovers 'abrupt'; large w recovers 'classical'.
-    #              This matters: a real surface is not atomically abrupt, and
-    #              the abrupt limit is the LOWEST-transmission choice, so it
-    #              gives the lowest SEY of the three.
+    # 'expqm'    : JMONSEL's barrier (Villarrubia 2015 Eq. 11), U(x) rising as
+    #              dU/[1+exp(-2x/w)] over width w = barrier_width (ANGSTROM).
+    #              w -> 0 recovers 'abrupt'; w -> infinity recovers 'classical'.
+    #              NOTE: Villarrubia 2015 states its own simulations used the
+    #              CLASSICAL limit, so JMONSEL reference curves are most likely
+    #              classical, not abrupt.  The abrupt step is the lowest-
+    #              transmission choice and gives the lowest SEY of the three.
     barrier_model: str = "abrupt"
-    barrier_width: float = 0.0           # w in Angstrom, used by 'sigmoid'
+    barrier_width: float = 0.0           # w in ANGSTROM, used by 'expqm' only
 
     # --- how the SE-generation mechanism is decided ---
     # 'mao'  : Mao et al. 2008 Eq. (9).  After (omega, q) are sampled, single
@@ -274,10 +273,15 @@ class MCConfig:
             raise ValueError(f"bad plasmon_se_direction: {self.plasmon_se_direction}")
         if self.barrier_model == "quantum":
             self.barrier_model = "abrupt"        # backwards-compatible synonym
-        if self.barrier_model not in ("abrupt", "classical", "sigmoid"):
+        _alias = {"quantum": "abrupt", "sigmoid": "expqm", "jmonsel": "expqm"}
+        self.barrier_model = _alias.get(self.barrier_model, self.barrier_model)
+        if self.barrier_model not in ("abrupt", "classical", "expqm"):
             raise ValueError(f"bad barrier_model: {self.barrier_model}")
-        if self.barrier_model == "sigmoid" and self.barrier_width <= 0:
-            raise ValueError("barrier_model='sigmoid' requires barrier_width > 0")
+        if self.barrier_model == "expqm" and self.barrier_width <= 0:
+            raise ValueError(
+                "barrier_model='expqm' requires barrier_width > 0 (Angstrom); "
+                "use 'abrupt' for w->0 or 'classical' for w->infinity"
+            )
         if self.se_channel_rule not in ("mao", "table"):
             raise ValueError(f"bad se_channel_rule: {self.se_channel_rule}")
         if self.on_pauli_block not in ("fallback", "drop"):
@@ -345,43 +349,79 @@ def _k_rel_au(E_ev):
     return math.sqrt(e * (2.0 + e / (C_AU ** 2)))
 
 
+def _sinh_ratio(a, b):
+    """
+    sinh(a)/sinh(b) for 0 <= a <= b, without overflowing.
+
+    Both arguments exceed the float range for any realistic barrier width above
+    a few tens of eV, so the ratio is evaluated as
+
+        sinh(a)/sinh(b) = exp(a-b) * expm1(-2a) / expm1(-2b)
+
+    which stays accurate as a -> 0 (expm1 avoids the 1 - exp cancellation that
+    a naive 1 - exp(-2a) suffers when a is small).
+    """
+    if b <= 0.0:
+        return 1.0
+    if a <= 0.0:
+        return 0.0
+    d = a - b
+    if d < -700.0:
+        return 0.0
+    return math.exp(d) * math.expm1(-2.0 * a) / math.expm1(-2.0 * b)
+
+
 def barrier_transmission(E_perp, Ui, cfg):
     """
-    Transmission through the surface barrier for perpendicular energy E_perp.
+    Transmission through the surface barrier, given the energy of motion
+    perpendicular to the surface.
 
-    'abrupt'    Abrupt step:  T = 4 r / (1 + r)^2,  r = sqrt(1 - Ui/E_perp).
-    'classical' T = 1 above the barrier.
-    'sigmoid'   Villarrubia et al., Ultramicroscopy 154 (2015) Eq. (11), for
-                U(x) = Ui / [1 + exp(-2x/w)]:
+    All three models are the same physics in different limits.  Villarrubia
+    et al., Ultramicroscopy 154 (2015), Section 3.6, adopt the exponential
+    s-curve potential
 
-                    T = 1 - [sinh(pi w (k1 - k2)/2) / sinh(pi w (k1 + k2)/2)]^2
+        U(x) = dU / [1 + exp(-2x/w)]
 
-                with k1, k2 the perpendicular wavenumbers inside and outside.
-                Evaluated in log space because both sinh arguments overflow
-                for any realistic w at a few tens of eV.
+    for which Schroedinger's equation is solved exactly (their Eq. 11):
+
+        T = 1 - [ sinh(pi w (k1 - k2)/2) / sinh(pi w (k1 + k2)/2) ]^2
+                                                   for E cos^2(theta) > dU
+        T = 0                                      otherwise
+
+        k1 = sqrt(2 m E cos^2 theta) / hbar
+        k2 = sqrt(2 m (E cos^2 theta - dU)) / hbar
+
+    'expqm'     the formula above; cfg.barrier_width = w in ANGSTROM.
+                Synonyms: 'sigmoid', 'jmonsel'.
+    'abrupt'    the w -> 0 limit.  sinh(x) -> x gives T = 4 k1 k2 / (k1+k2)^2,
+                the abrupt step used by Ding & Shimizu and by Mao et al.  It is
+                the LOWEST-transmission choice of the three.
+                Synonym: 'quantum'.
+    'classical' the w -> infinity limit, T = 1 above the barrier.
+
+    For a JMONSEL comparison: Villarrubia 2015 states that its own boundary
+    crossings were computed in the CLASSICAL limit, so reference curves from
+    that code are most likely classical rather than abrupt.  A real surface is
+    neither limit, so 'expqm' with w of order 1-5 A is the defensible middle
+    ground -- with w acting as a fit parameter.
     """
     if E_perp <= Ui:
         return 0.0
+
     model = cfg.barrier_model
     if model == "classical":
         return 1.0
-    if model == "abrupt":
-        r = math.sqrt(1.0 - Ui / E_perp)
-        return 4.0 * r / ((1.0 + r) ** 2)
 
-    # sigmoid
-    k1 = math.sqrt(2.0 * E_perp / H2EV) / A0_ANG          # Angstrom^-1
+    # k in Angstrom^-1, so that w*k is dimensionless with w in Angstrom
+    k1 = math.sqrt(2.0 * E_perp / H2EV) / A0_ANG
     k2 = math.sqrt(2.0 * (E_perp - Ui) / H2EV) / A0_ANG
-    a = 0.5 * math.pi * cfg.barrier_width * (k1 - k2)
-    b = 0.5 * math.pi * cfg.barrier_width * (k1 + k2)
-    if b <= 0.0:
-        return 0.0
-    if b < 20.0:
-        ratio = math.sinh(a) / math.sinh(b)
-    else:
-        # sinh(a)/sinh(b) = exp(a-b) * (1 - e^-2a)/(1 - e^-2b)
-        ratio = math.exp(a - b) * (1.0 - math.exp(-2.0 * a)) / (1.0 - math.exp(-2.0 * b))
-    return max(0.0, min(1.0, 1.0 - ratio * ratio))
+
+    if model == "abrupt":
+        return 4.0 * k1 * k2 / ((k1 + k2) ** 2)
+
+    w = cfg.barrier_width
+    r = _sinh_ratio(0.5 * math.pi * w * (k1 - k2), 0.5 * math.pi * w * (k1 + k2))
+    return max(0.0, min(1.0, 1.0 - r * r))
 
 
 def _isotropic_direction(rng):
@@ -1962,3 +2002,45 @@ def report_channel_boundaries(sample: Sample, energies=(100.0, 500.0, 2000.0), *
         print(f"    E0 = {E_vac:7.0f} eV : {f_se:6.1%} of 'se' events, "
               f"{f_all:6.1%} of all inelastic events")
     return rows
+
+
+def check_barrier_limits(Ui=13.35, verbose=True):
+    """
+    (vi) The JMONSEL exponential-barrier formula must reproduce its own limits.
+
+      w -> 0        T -> 4 k1 k2 / (k1 + k2)^2   (abrupt step)
+      w -> infinity T -> 1                       (classical)
+
+    Both are checked against the independently-coded 'abrupt' and 'classical'
+    branches, so an algebra or unit error in the sinh expression shows up as a
+    mismatch rather than as a plausible-looking curve.
+    """
+    c_ab = MCConfig(barrier_model="abrupt")
+    c_cl = MCConfig(barrier_model="classical")
+    energies = [Ui * f for f in (1.001, 1.01, 1.1, 1.5, 2.0, 5.0, 20.0, 100.0)]
+
+    worst_small, worst_large = 0.0, 0.0
+    for E in energies:
+        t_ab = barrier_transmission(E, Ui, c_ab)
+        t_cl = barrier_transmission(E, Ui, c_cl)
+        t_s = barrier_transmission(E, Ui, MCConfig(barrier_model="expqm",
+                                                   barrier_width=1e-6))
+        t_l = barrier_transmission(E, Ui, MCConfig(barrier_model="expqm",
+                                                   barrier_width=5e3))
+        worst_small = max(worst_small, abs(t_s - t_ab))
+        worst_large = max(worst_large, abs(t_l - t_cl))
+
+    if verbose:
+        print(f"Barrier model check (Ui = {Ui:.2f} eV)")
+        print(f"  max |T(w=1e-6 A) - T_abrupt|    = {worst_small:.3e}")
+        print(f"  max |T(w=5000 A) - T_classical| = {worst_large:.3e}")
+        print()
+        print(f"  {'E_perp':>8} {'abrupt':>9} {'w=0.5A':>9} {'w=1A':>9} "
+              f"{'w=2A':>9} {'w=5A':>9} {'classical':>10}")
+        for E in energies:
+            cfgs = [c_ab] + [MCConfig(barrier_model="expqm", barrier_width=w)
+                             for w in (0.5, 1.0, 2.0, 5.0)] + [c_cl]
+            vals = [barrier_transmission(E, Ui, c) for c in cfgs]
+            print(f"  {E:8.2f} " + " ".join(f"{v:9.5f}" for v in vals[:-1])
+                  + f" {vals[-1]:10.5f}")
+    return {"abrupt_limit_error": worst_small, "classical_limit_error": worst_large}
