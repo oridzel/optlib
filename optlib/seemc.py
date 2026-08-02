@@ -1462,7 +1462,7 @@ class SEEMC:
         return [self.seed, int(k), int(traj)]
 
     # ------------------------------------------------------------------
-    def run_simulation(self, use_parallel=False, progress=True):
+    def run_simulation(self, use_parallel=False, progress=True, verbose=True):
         """
         Run all energies.  NOTE: `use_parallel=True` uses the 'spawn' start
         method, so the calling code must be guarded:
@@ -1542,7 +1542,8 @@ class SEEMC:
                 pool.close()
                 pool.join()
 
-        print(f"Done in {time.time() - t0:.1f} s")
+        if verbose:
+            print(f"Done in {time.time() - t0:.1f} s")
         return self
 
     def _run_one(self, E0, k, traj):
@@ -2044,3 +2045,65 @@ def check_barrier_limits(Ui=13.35, verbose=True):
             print(f"  {E:8.2f} " + " ".join(f"{v:9.5f}" for v in vals[:-1])
                   + f" {vals[-1]:10.5f}")
     return {"abrupt_limit_error": worst_small, "classical_limit_error": worst_large}
+
+
+def stopping_power(sample: Sample, E_s):
+    """
+    Stopping power dE/ds in eV/Angstrom at VB-bottom-referenced energy E_s.
+
+        dE/ds = integral_0^omega_max  omega * DIIMFP(omega; E_s) d omega
+
+    Also returns the IMFP and the mean loss per collision.
+    """
+    trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+    i, t = _bin_and_fraction(sample.Egrid, sample._clip_E(sample._imfp_abscissa(E_s)))
+    w_max = sample.omega_max(E_s)
+    if w_max <= 0:
+        return dict(E_s=E_s, imfp=float("nan"), dEds=0.0, mean_loss=float("nan"))
+
+    grid = np.linspace(0.0, w_max, 4000)
+    pdf = np.zeros_like(grid)
+    for key in ("diimfp_se", "diimfp_pl"):
+        tab = np.asarray(sample.material_data[key], float)
+        lo = np.interp(grid, tab[:, 0, i], tab[:, 1, i], left=0.0, right=0.0)
+        hi = np.interp(grid, tab[:, 0, i + 1], tab[:, 1, i + 1], left=0.0, right=0.0)
+        pdf += (1.0 - t) * lo + t * hi
+
+    inv_imfp = float(trapz(pdf, grid))
+    dEds = float(trapz(pdf * grid, grid))
+    return dict(E_s=E_s,
+                imfp=(1.0 / inv_imfp) if inv_imfp > 0 else float("inf"),
+                dEds=dEds,
+                mean_loss=(dEds / inv_imfp) if inv_imfp > 0 else float("nan"))
+
+
+def report_low_energy_transport(sample: Sample, energies=None):
+    """
+    IMFP and stopping power in the range that sets the SE escape depth.
+
+    This is the quantity to check when delta_max sits at the wrong primary
+    energy while BSE already agrees: BSE is fixed by primary transport, so a
+    correct BSE plus a low delta_max points at the SECONDARY escape depth, i.e.
+    the IMFP below ~50 eV, which is where the FPA is an extrapolation rather
+    than a validated calculation.
+
+    Compare the dE/ds column against Villarrubia et al., Ultramicroscopy 154
+    (2015) Fig. 3, which plots exactly this for Cu -- measured data from
+    Hovington, Luo, and Al-Ahmad & Watt as tabulated by Joy -- with the same
+    abscissa convention used here (kinetic energy referenced to the bottom of
+    the conduction band).
+    """
+    if energies is None:
+        energies = [5, 7, 10, 15, 20, 30, 50, 75, 100, 150, 200, 300, 500, 1000]
+    print(f"Low-energy transport for {sample.name}")
+    print(f"  E_F = {sample.e_fermi:.2f} eV, U_i = {sample.Ui:.2f} eV "
+          f"(escape needs E_s > U_i)")
+    print(f"  {'E_s (eV)':>9} {'E-E_F':>8} {'IMFP (A)':>10} {'dE/ds (eV/A)':>13} "
+          f"{'mean loss':>10}")
+    for E in energies:
+        r = stopping_power(sample, float(E))
+        print(f"  {E:9.1f} {E - sample.e_fermi:8.1f} {r['imfp']:10.2f} "
+              f"{r['dEds']:13.3f} {r['mean_loss']:10.2f}")
+    print("\n  A too-SHORT IMFP at 15-50 eV absorbs secondaries before they")
+    print("  reach the surface, lowering delta and pulling delta_max to lower")
+    print("  primary energy -- the signature you are seeing.")
