@@ -22,12 +22,27 @@ named converter in `Sample` and never touches `material_data` directly.
             energy T with respect to the Fermi level").
 
     E_vac   = E_s - U_i  with  U_i = E_F + phi,  the kinetic energy the
-            electron would have in vacuum.  This is the abscissa of ELSEPA
-            elastic tables: ELSEPA is fed a vacuum kinetic energy, and the
-            solid-state optical-model potential is flat (= -Delta_E) outside
-            the muffin-tin sphere, so the inner potential is folded into the
-            potential rather than into the energy argument
-            (Salvat/Jablonski/Powell, "Atoms in solids" note, Eqs. 7-8).
+            electron would have in vacuum.  Used for emission, NOT for table
+            lookups.
+
+    NOTE ON THE ELASTIC TABLES.  It is tempting to assume ELSEPA is fed a
+    vacuum kinetic energy.  For the solid-state (muffin-tin) optical model it
+    is not.  Salvat/Jablonski/Powell, "elsepa ... (version 2020)", Eqs. (7)-(8):
+    outside the muffin-tin sphere the potential is the constant
+    V(r) = -Delta_E - i*Gamma, "the background potential of the projectile
+    within the solid", and the phase shifts are obtained from
+    V1(r) = V(r) + Delta_E + i*Gamma, WHICH VANISHES FOR r > Rmt.  Because V1
+    vanishes in the interstitial region, the asymptotic momentum corresponds
+    to the input energy EV directly: EV is the kinetic energy INSIDE the solid,
+    measured from the muffin-tin zero.  For a metal the muffin-tin zero is
+    essentially the band bottom and Delta_E is the inner potential, so
+
+            EV  ~=  E_s        (VB-bottom referenced, NOT vacuum)
+
+    Hence emfp_energy_ref defaults to 'vb_bottom'.  Getting this wrong shifts
+    the elastic lookup by U_i (13.4 eV for Cu) into the region where the cross
+    section is rising steeply, which collapses the low-energy elastic MFP and
+    with it the secondary-electron escape depth.
 
 Which reference each DB table uses is declared once, in `MCConfig`:
 
@@ -170,7 +185,11 @@ class MCConfig:
 
     # --- table energy references (see module docstring) ---
     imfp_energy_ref: str = "vb_bottom"   # 'vb_bottom' (E_s) or 'fermi' (E_s - E_F)
-    emfp_energy_ref: str = "vacuum"      # 'vacuum' (E_s - U_i) or 'vb_bottom'
+    # 'vb_bottom' is correct for ELSEPA's solid-state muffin-tin model: its
+    # input energy is the kinetic energy in the interstitial region, not in
+    # vacuum (see the module docstring and elsepa 2020 Eqs. 7-8).  'vacuum'
+    # is kept only to reproduce the earlier, incorrect behaviour.
+    emfp_energy_ref: str = "vb_bottom"
 
     # --- units of material_data['q'] ---
     q_unit: str = "a0^-1"                # 'a0^-1' or 'A^-1'
@@ -2190,11 +2209,19 @@ def escape_depth_analysis(sample: Sample, E0, n_traj=400, seed=5, nbins=14, zmax
     with np.errstate(divide="ignore", invalid="ignore"):
         P = np.where(c > 0, e / np.maximum(c, 1), np.nan)
 
-    ok = (c > 30) & np.isfinite(P) & (P > 0)
+    # P(z) is NOT a pure exponential: near z=0 it plateaus, because escape is
+    # limited by the escape cone and barrier transmission rather than by
+    # attenuation.  Including that plateau biases the fitted decay length
+    # upward, so the fit starts past the peak of P.
     lam = float("nan")
+    ok = (c > 30) & np.isfinite(P) & (P > 0)
     if ok.sum() >= 3:
-        sl = np.polyfit(z[ok], np.log(P[ok]), 1)[0]
-        lam = -1.0 / sl if sl < 0 else float("nan")
+        i_pk = int(np.nanargmax(np.where(ok, P, np.nan)))
+        fit = ok.copy()
+        fit[:i_pk] = False
+        if fit.sum() >= 3:
+            sl = np.polyfit(z[fit], np.log(P[fit]), 1)[0]
+            lam = -1.0 / sl if sl < 0 else float("nan")
 
     print(f"SE escape depth, {sample.name}, E0 = {E0:g} eV, {n_traj} trajectories")
     print(f"  secondaries created: {created.size}   escaped: {escaped.size} "
