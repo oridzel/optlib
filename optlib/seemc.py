@@ -1487,6 +1487,7 @@ class SEEMC:
         self.sey_50ev = np.zeros(n)     # conventional 50 eV split
         self.bse_50ev = np.zeros(n)
         self.tey_err = np.zeros(n)
+        self.n_completed = np.zeros(n, dtype=int)
         self.sey_err = np.zeros(n)
         self.bse_err = np.zeros(n)
 
@@ -1554,7 +1555,9 @@ class SEEMC:
 
                 iterator = tqdm(it, total=n_traj, desc=f"E={E0:.1f} eV") if progress else it
 
+                n_done = 0
                 for tey, sey, bse, sey50, bse50, emis, trk, diag in iterator:
+                    n_done += 1
                     vals = np.array([tey, sey, bse, sey50, bse50], dtype=float)
                     acc += vals
                     acc_sq += vals * vals
@@ -1564,9 +1567,22 @@ class SEEMC:
                         tracks_E.append(trk)
                     self.diagnostics.add(diag)
 
-                mean = acc / n_traj
-                var = np.maximum(acc_sq / n_traj - mean ** 2, 0.0)
-                sem = np.sqrt(var / n_traj)
+                # Normalise by the number of trajectories that ACTUALLY came
+                # back, not the number requested. If a worker dies or an
+                # iterator is short-circuited, dividing by n_traj silently
+                # reports a yield that is too low, and the standard error is
+                # computed for a sample size that was never simulated.
+                if n_done != n_traj:
+                    warnings.warn(
+                        f"E0={E0:g} eV: requested {n_traj} trajectories but "
+                        f"{n_done} completed. Statistics use {n_done}.",
+                        RuntimeWarning, stacklevel=2)
+                if n_done == 0:
+                    raise RuntimeError(f"No trajectories completed at E0={E0:g} eV")
+                self.n_completed[k] = n_done
+                mean = acc / n_done
+                var = np.maximum(acc_sq / n_done - mean ** 2, 0.0)
+                sem = np.sqrt(var / n_done)
 
                 self.tey[k], self.sey[k], self.bse[k] = mean[0], mean[1], mean[2]
                 self.sey_50ev[k], self.bse_50ev[k] = mean[3], mean[4]
@@ -1602,7 +1618,8 @@ class SEEMC:
         return counts / self.n_trajectories, edges
 
     def summary(self):
-        lines = [f"{self.sample.name}: {self.n_trajectories} trajectories/energy",
+        lines = [f"{self.sample.name}: {self.n_trajectories} trajectories/energy "
+                 f"(completed: {self.n_completed.min()}-{self.n_completed.max()})",
                  f"{'E0 (eV)':>9} {'TEY':>10} {'+/-':>9} "
                  f"{'SEY(<50eV)':>11} {'BSE(>50eV)':>11}"]
         for k, E0 in enumerate(self.energy_array):
@@ -2320,3 +2337,57 @@ def check_elastic_consistency(sample: Sample, nn_distance=None):
     print("  If that was the same grid used for the IMFP (VB-bottom referenced),")
     print("  then emfp is ALSO VB-bottom referenced and subtracting U_i here is a")
     print("  double correction. Test it with MCConfig(emfp_energy_ref='vb_bottom').")
+
+
+def verify_statistics(sample_name, E0, n_small=250, n_large=1000, db_path="MaterialDatabase.pkl",
+                      config=None, seed=99, parallel=True):
+    """
+    (viii) Confirm that n_traj actually reaches the simulation.
+
+    Two independent tests, because a silently-ignored n_traj produces results
+    that look perfectly reasonable:
+
+      1. SCALING.  The standard error must fall as 1/sqrt(N).  Quadrupling the
+         trajectory count must halve it.  If the error is unchanged, the larger
+         run simulated the same number of trajectories as the smaller one.
+      2. INDEPENDENCE.  With the SAME seed, a larger run reuses the smaller
+         run's trajectories and adds more, so the means must DIFFER (by roughly
+         the standard error). Identical means to 3+ decimals mean the extra
+         trajectories were never run.
+
+    Test 2 is the one that catches the failure that motivated this function:
+    a 10000-trajectory run reproducing a 2000-trajectory run bit-for-bit.
+    """
+    cfg = config or MCConfig()
+    out = {}
+    for label, n in (("small", n_small), ("large", n_large)):
+        mc = SEEMC(np.array([float(E0)]), sample_name, angle=0.0, n_traj=n,
+                   db_path=db_path, config=cfg, seed=seed)
+        mc.run_simulation(use_parallel=parallel, progress=False, verbose=False)
+        out[label] = dict(requested=n, completed=int(mc.n_completed[0]),
+                          tey=float(mc.tey[0]), err=float(mc.tey_err[0]))
+
+    s, l = out["small"], out["large"]
+    ratio_expected = math.sqrt(l["requested"] / s["requested"])
+    ratio_actual = s["err"] / l["err"] if l["err"] > 0 else float("inf")
+    identical = abs(s["tey"] - l["tey"]) < 1e-9
+
+    print(f"Statistics check, {sample_name} at E0 = {E0:g} eV")
+    for k in ("small", "large"):
+        d = out[k]
+        print(f"  {k:>5}: requested {d['requested']:>6}  completed "
+              f"{d['completed']:>6}  TEY {d['tey']:.4f} +- {d['err']:.4f}")
+    print(f"\n  error ratio  measured {ratio_actual:.2f}  expected "
+          f"{ratio_expected:.2f}")
+    print(f"  means identical: {identical}")
+
+    ok = (s["completed"] == s["requested"] and l["completed"] == l["requested"]
+          and not identical and abs(ratio_actual - ratio_expected) < 0.5 * ratio_expected)
+    print(f"\n  {'PASS' if ok else 'FAIL'}: n_traj "
+          f"{'reaches' if ok else 'does NOT reach'} the simulation")
+    if not ok and identical:
+        print("  Identical means with the same seed prove the larger run did not")
+        print("  simulate more trajectories. Check that the value printed in your")
+        print("  script header is the same variable passed to SEEMC(n_traj=...).")
+    out["pass"] = ok
+    return out
