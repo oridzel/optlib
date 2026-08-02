@@ -1863,14 +1863,60 @@ def check_channel_boundaries(sample: Sample, omegas=None, threshold=1e-3):
     return rows
 
 
-def report_channel_boundaries(sample: Sample, **kw):
+def se_strength_lost(sample: Sample, E_s, n_omega=60):
+    """
+    DIIMFP-weighted estimate of how many single-particle secondaries the
+    'table' channel rule loses at primary energy E_s.
+
+    For each omega, the fraction of elf_se strength sitting at q < q-(omega)
+    is weighted by that omega's contribution to the inelastic rate.  Under
+    se_channel_rule='table' with on_pauli_block='drop' (the original code) this
+    fraction of 'se' events produced NO secondary at all.
+    """
+    trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+    i, _ = _bin_and_fraction(sample.Egrid, sample._clip_E(sample._imfp_abscissa(E_s)))
+    tab = np.asarray(sample.material_data["diimfp_se"], float)
+    w_tab, d_tab = tab[:, 0, i], tab[:, 1, i]
+
+    w_max = sample.omega_max(E_s)
+    if w_max <= 0:
+        return float("nan"), float("nan")
+    omegas = np.geomspace(max(w_tab[w_tab > 0].min(), 0.5), w_max, n_omega)
+    q = np.exp(sample._qlog_grid)
+
+    weight, lost = [], []
+    for w in omegas:
+        elf = np.clip(np.nan_to_num(np.asarray(
+            sample._elf_spl["se"].ev(np.full_like(q, w / H2EV), sample._qlog_grid),
+            float)), 0.0, None)
+        tot = trapz(elf, sample._qlog_grid)
+        if tot <= 0:
+            weight.append(0.0); lost.append(0.0); continue
+        qm, _ = sample.mao_q_boundaries(w)
+        m = q < qm
+        below = trapz(elf[m], sample._qlog_grid[m]) if m.sum() > 1 else 0.0
+        weight.append(float(np.interp(w, w_tab, d_tab, left=0.0, right=0.0)))
+        lost.append(below / tot)
+
+    weight = np.asarray(weight); lost = np.asarray(lost)
+    denom = trapz(weight, omegas)
+    frac = float(trapz(weight * lost, omegas) / denom) if denom > 0 else float("nan")
+
+    inv_se = float(np.interp(sample._clip_E(sample._imfp_abscissa(E_s)),
+                             sample.Egrid, sample.material_data["inv_imfp_se"]))
+    inv_pl = float(np.interp(sample._clip_E(sample._imfp_abscissa(E_s)),
+                             sample.Egrid, sample.material_data["inv_imfp_pl"]))
+    share = inv_se / max(inv_se + inv_pl, 1e-30)
+    return frac, frac * share
+
+def report_channel_boundaries(sample: Sample, energies=(100.0, 500.0, 2000.0), **kw):
     rows = check_channel_boundaries(sample, **kw)
     kF_db = sample.k_fermi_feg
     print(f"Channel-boundary check for {sample.name}")
     print(f"  DB e_fermi = {sample.e_fermi_feg:.3f} eV  ->  k_F = {kF_db:.4f} a0^-1")
     print(f"  {'omega':>8} {'q-(th)':>8} {'se_q_lo':>8} {'kF(lo)':>8} "
           f"{'kF(hi)':>8} {'se<q-':>7} {'pl>q-':>7}")
-    kfs = []
+    kfs, ws = [], []
     for r in rows:
         lo = r.get("se_q_lo", float("nan"))
         klo = r.get("kF_from_lower_edge", float("nan"))
@@ -1879,18 +1925,40 @@ def report_channel_boundaries(sample: Sample, **kw):
         fa = r.get("pl_frac_above_qminus", 0.0)
         if np.isfinite(klo) and klo > 0:
             kfs.append(klo)
+            ws.append(r["omega"])
         print(f"  {r['omega']:8.2f} {r['q_minus_theory']:8.4f} {lo:8.4f} "
               f"{klo:8.4f} {khi:8.4f} {fb:7.1%} {fa:7.1%}")
-    if kfs:
-        kf_eff = float(np.median(kfs))
-        ef_eff = 0.5 * kf_eff ** 2 * H2EV
-        print(f"\n  Inferred k_F from elf_se support : {kf_eff:.4f} a0^-1 "
-              f"(E_F = {ef_eff:.2f} eV)")
-        print(f"  DB k_F                            : {kF_db:.4f} a0^-1 "
-              f"(E_F = {sample.e_fermi_feg:.2f} eV)")
-        if abs(kf_eff - kF_db) / max(kF_db, 1e-9) > 0.15:
-            print("\n  >>> The tables and the DB's e_fermi disagree. Either set\n"
-                  f"  >>>     MCConfig(feg_fermi_energy={ef_eff:.2f})\n"
-                  "  >>> or keep se_channel_rule='mao', which does not rely on\n"
-                  "  >>> the table split at all and cannot lose secondaries.")
+
+    if len(kfs) >= 4:
+        kfs = np.asarray(kfs)
+        ws = np.asarray(ws)
+        spread = float(kfs.max() / max(kfs.min(), 1e-12))
+        slope = float(np.polyfit(np.log(ws), np.log(kfs), 1)[0])
+        print()
+        print(f"  k_F inferred from the elf_se lower edge: "
+              f"{kfs.min():.2f} - {kfs.max():.2f} a0^-1 "
+              f"(spread {spread:.1f}x, ~omega^{slope:.2f})")
+        if spread > 1.5:
+            print()
+            print("  The inferred k_F is NOT constant, so the elf_se lower edge is not a")
+            print("  pair-continuum edge, and NO single feg_fermi_energy can repair the")
+            print("  table split. This is the expected signature of an FPA database:")
+            print("  Mao Eq. (8) integrates over a scanning omega_p, so the support of")
+            print("  elf_se is a UNION of continua with different k_F(omega_p), not one")
+            print("  continuum.")
+            print("    => Keep se_channel_rule='mao' (the default). It classifies each")
+            print("       sampled (omega, q) by Mao Eq. (9) and cannot lose a secondary.")
+            print("    => Do NOT set feg_fermi_energy from this table.")
+        else:
+            ef = 0.5 * float(np.median(kfs)) ** 2 * H2EV
+            print(f"  Consistent with a single continuum: consider "
+                  f"MCConfig(feg_fermi_energy={ef:.2f})")
+
+    print()
+    print("  DIIMFP-weighted single-particle strength at q < q-")
+    print("  (this fraction produced NO secondary under 'table' + 'drop'):")
+    for E_vac in energies:
+        f_se, f_all = se_strength_lost(sample, E_vac + sample.Ui)
+        print(f"    E0 = {E_vac:7.0f} eV : {f_se:6.1%} of 'se' events, "
+              f"{f_all:6.1%} of all inelastic events")
     return rows
