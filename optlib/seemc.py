@@ -259,6 +259,10 @@ class MCConfig:
 
     # --- diagnostics ---
     collect_spectra: bool = True
+    # Record the depth at which every secondary is CREATED (not just the ones
+    # that escape).  Needed to measure the escape probability vs depth, i.e.
+    # the SE escape depth, without assuming a functional form.
+    collect_birth_depths: bool = False
 
     def validate(self) -> None:
         if self.imfp_energy_ref not in ("vb_bottom", "fermi"):
@@ -1288,6 +1292,7 @@ class TrajectoryResult:
     sey_50ev: int = 0           # split by the conventional 50 eV emission cut
     bse_50ev: int = 0
     emissions: list = field(default_factory=list)
+    birth_depths: list = field(default_factory=list)
     tracks: list = field(default_factory=list)
     diagnostics: Diagnostics = field(default_factory=Diagnostics)
 
@@ -1381,6 +1386,8 @@ def simulate_trajectory(sample: Sample, E0, angle_rad, rng, track=False):
                 continue
 
             diag["se_created"] += 1
+            if cfg.collect_birth_depths:
+                res.birth_depths.append(secondary.xyz[2])
             queue.append(
                 Electron(sample, secondary.energy, secondary.xyz, secondary.uvw,
                          generation=secondary.generation, is_cascade=True,
@@ -2107,3 +2114,63 @@ def report_low_energy_transport(sample: Sample, energies=None):
     print("\n  A too-SHORT IMFP at 15-50 eV absorbs secondaries before they")
     print("  reach the surface, lowering delta and pulling delta_max to lower")
     print("  primary energy -- the signature you are seeing.")
+
+
+def escape_depth_analysis(sample: Sample, E0, n_traj=400, seed=5, nbins=14, zmax=None):
+    """
+    Measure the secondary-electron escape depth DIRECTLY, rather than inferring
+    it from the IMFP.
+
+    Histograms the depth at which secondaries are created against the depth at
+    which the ones that escaped were created.  The ratio is the escape
+    probability P(z), whose decay length is the escape depth.  No functional
+    form is assumed and no separate simulation is needed -- both distributions
+    come from the same trajectories.
+
+    This is the decisive test when delta_max sits at the wrong primary energy
+    while BSE already agrees: BSE fixes primary transport, so a wrong delta_max
+    must come from either the SE source term (dE/ds) or the escape depth, and
+    this separates them.
+    """
+    cfg = MCConfig(**{**sample.cfg.__dict__, "collect_birth_depths": True,
+                      "collect_spectra": True})
+    smp = Sample(sample.name, db_path=getattr(sample, "_db_path", "MaterialDatabase.pkl"),
+                 config=cfg) if not hasattr(sample, "_reuse") else sample
+    created, escaped = [], []
+    for i in range(n_traj):
+        r = simulate_trajectory(smp, float(E0), 0.0, np.random.default_rng([seed, i]))
+        created.extend(r.birth_depths)
+        escaped.extend(e.birth_depth for e in r.emissions if e.is_cascade)
+
+    created = np.asarray(created, float)
+    escaped = np.asarray(escaped, float)
+    if created.size == 0:
+        return {"n_created": 0}
+
+    if zmax is None:
+        zmax = float(np.percentile(created, 90))
+    edges = np.linspace(0.0, zmax, nbins + 1)
+    c, _ = np.histogram(created, bins=edges)
+    e, _ = np.histogram(escaped, bins=edges)
+    z = 0.5 * (edges[1:] + edges[:-1])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        P = np.where(c > 0, e / np.maximum(c, 1), np.nan)
+
+    ok = (c > 30) & np.isfinite(P) & (P > 0)
+    lam = float("nan")
+    if ok.sum() >= 3:
+        sl = np.polyfit(z[ok], np.log(P[ok]), 1)[0]
+        lam = -1.0 / sl if sl < 0 else float("nan")
+
+    print(f"SE escape depth, {sample.name}, E0 = {E0:g} eV, {n_traj} trajectories")
+    print(f"  secondaries created: {created.size}   escaped: {escaped.size} "
+          f"({escaped.size / created.size:.1%})")
+    print(f"  {'z (A)':>8} {'created':>9} {'escaped':>9} {'P(escape)':>11}")
+    for zi, ci, ei, pi in zip(z, c, e, P):
+        print(f"  {zi:8.1f} {ci:9d} {ei:9d} {pi:11.4f}")
+    print(f"\n  fitted escape depth lambda = {lam:.2f} A")
+    print(f"  median creation depth      = {np.median(created):.2f} A")
+    print(f"  median escape-origin depth = "
+          f"{np.median(escaped) if escaped.size else float('nan'):.2f} A")
+    return {"z": z, "created": c, "escaped": e, "P": P, "lambda": lam,
+            "n_created": created.size, "n_escaped": escaped.size}
