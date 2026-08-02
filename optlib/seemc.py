@@ -179,14 +179,38 @@ class MCConfig:
     elastic_min_energy: float = 5.0      # ELSEPA tables clamped below this (eV, vacuum ref)
 
     # --- surface barrier ---
-    # 'quantum'  : T = 4r/(1+r)^2, r = sqrt(1 - Ui/E_perp).  Physically right for
-    #              an abrupt step, and what most SEE codes use.
-    # 'classical': T = 1 whenever E_perp > Ui.  Included because it is the other
-    #              common choice and because the two differ by ~25% in SEY --
-    #              a spectrum-averaged factor 0.73 for Cu.  Use it to check
-    #              whether a reference code's higher yield is a barrier-model
-    #              difference rather than a transport difference.
-    barrier_model: str = "quantum"
+    # 'abrupt'   : T = 4r/(1+r)^2, r = sqrt(1 - Ui/E_perp).  Abrupt step.
+    #              ('quantum' is accepted as a synonym.)
+    # 'classical': T = 1 whenever E_perp > Ui.
+    # 'sigmoid'  : JMONSEL's barrier (Villarrubia 2015 Eq. 11).  The potential
+    #              rises as U(x) = dU / [1 + exp(-2x/w)] over a width w, and
+    #              Schroedinger's equation is solved exactly:
+    #                  T = 1 - [sinh(pi w (k1-k2)/2) / sinh(pi w (k1+k2)/2)]^2
+    #              w -> 0 recovers 'abrupt'; large w recovers 'classical'.
+    #              This matters: a real surface is not atomically abrupt, and
+    #              the abrupt limit is the LOWEST-transmission choice, so it
+    #              gives the lowest SEY of the three.
+    barrier_model: str = "abrupt"
+    barrier_width: float = 0.0           # w in Angstrom, used by 'sigmoid'
+
+    # --- how the SE-generation mechanism is decided ---
+    # 'mao'  : Mao et al. 2008 Eq. (9).  After (omega, q) are sampled, single
+    #          electron excitation is declared if q- <= q <= q+, and plasmon
+    #          damping if q < q-, with
+    #              q_mp = -/+ k_F + sqrt(k_F^2 + 2 omega)      [atomic units]
+    #          This is EXACTLY the condition for the Fermi-sphere disk to be
+    #          non-empty, so the binary-encounter sampler can never fail and
+    #          no excitation is ever lost.  RECOMMENDED.
+    # 'table': trust the DB's elf_se / elf_pl split to also define the SE
+    #          mechanism.  This is only equivalent to 'mao' if the tables were
+    #          built with the same k_F that the DB reports as e_fermi.  For an
+    #          FPA database they generally were NOT: the FPA decomposition
+    #          integrates over a plasmon frequency omega_p that scans the whole
+    #          optical range, so the support of elf_se is set by the LARGEST
+    #          k_F(omega_p) in the decomposition, not by the material's k_F.
+    #          The result is elf_se strength at q < q-, where no target state
+    #          exists -- silently destroying secondaries.
+    se_channel_rule: str = "mao"
 
     # --- FEG parameters used by the binary-encounter SE model ---
     # k_F for the struck-electron sampling is normally taken from the DB's
@@ -248,8 +272,14 @@ class MCConfig:
             raise ValueError(f"bad se_direction_model: {self.se_direction_model}")
         if self.plasmon_se_direction not in ("momentum", "isotropic"):
             raise ValueError(f"bad plasmon_se_direction: {self.plasmon_se_direction}")
-        if self.barrier_model not in ("quantum", "classical"):
+        if self.barrier_model == "quantum":
+            self.barrier_model = "abrupt"        # backwards-compatible synonym
+        if self.barrier_model not in ("abrupt", "classical", "sigmoid"):
             raise ValueError(f"bad barrier_model: {self.barrier_model}")
+        if self.barrier_model == "sigmoid" and self.barrier_width <= 0:
+            raise ValueError("barrier_model='sigmoid' requires barrier_width > 0")
+        if self.se_channel_rule not in ("mao", "table"):
+            raise ValueError(f"bad se_channel_rule: {self.se_channel_rule}")
         if self.on_pauli_block not in ("fallback", "drop"):
             raise ValueError(f"bad on_pauli_block: {self.on_pauli_block}")
 
@@ -315,6 +345,45 @@ def _k_rel_au(E_ev):
     return math.sqrt(e * (2.0 + e / (C_AU ** 2)))
 
 
+def barrier_transmission(E_perp, Ui, cfg):
+    """
+    Transmission through the surface barrier for perpendicular energy E_perp.
+
+    'abrupt'    Abrupt step:  T = 4 r / (1 + r)^2,  r = sqrt(1 - Ui/E_perp).
+    'classical' T = 1 above the barrier.
+    'sigmoid'   Villarrubia et al., Ultramicroscopy 154 (2015) Eq. (11), for
+                U(x) = Ui / [1 + exp(-2x/w)]:
+
+                    T = 1 - [sinh(pi w (k1 - k2)/2) / sinh(pi w (k1 + k2)/2)]^2
+
+                with k1, k2 the perpendicular wavenumbers inside and outside.
+                Evaluated in log space because both sinh arguments overflow
+                for any realistic w at a few tens of eV.
+    """
+    if E_perp <= Ui:
+        return 0.0
+    model = cfg.barrier_model
+    if model == "classical":
+        return 1.0
+    if model == "abrupt":
+        r = math.sqrt(1.0 - Ui / E_perp)
+        return 4.0 * r / ((1.0 + r) ** 2)
+
+    # sigmoid
+    k1 = math.sqrt(2.0 * E_perp / H2EV) / A0_ANG          # Angstrom^-1
+    k2 = math.sqrt(2.0 * (E_perp - Ui) / H2EV) / A0_ANG
+    a = 0.5 * math.pi * cfg.barrier_width * (k1 - k2)
+    b = 0.5 * math.pi * cfg.barrier_width * (k1 + k2)
+    if b <= 0.0:
+        return 0.0
+    if b < 20.0:
+        ratio = math.sinh(a) / math.sinh(b)
+    else:
+        # sinh(a)/sinh(b) = exp(a-b) * (1 - e^-2a)/(1 - e^-2b)
+        ratio = math.exp(a - b) * (1.0 - math.exp(-2.0 * a)) / (1.0 - math.exp(-2.0 * b))
+    return max(0.0, min(1.0, 1.0 - ratio * ratio))
+
+
 def _isotropic_direction(rng):
     cos_t = 2.0 * rng.random() - 1.0
     sin_t = math.sqrt(max(1.0 - cos_t * cos_t, 0.0))
@@ -368,6 +437,7 @@ class Diagnostics(dict):
         "se_created",
         "se_blocked_pauli",       # FEG kinematics forbade a target state
         "se_pauli_fallback",      # ... and a DOS-based secondary was made instead
+        "channel_reclassified",   # table channel != Mao q-boundary channel
         "se_below_barrier",       # SE created but cannot escape -> not tracked
         "omega_cdf_empty",        # energy bin had no inelastic strength
         "q_window_clipped",       # [q-, q+] extended past the tabulated q grid
@@ -723,6 +793,22 @@ class Sample:
             "pl": RectBivariateSpline(omega_h, qlog, elf_pl, kx=1, ky=1),
         }
 
+    def mao_q_boundaries(self, omega):
+        """
+        Mao et al. 2008, Eq. (9): the edges of the single-electron-excitation
+        region, in atomic units (a0^-1).
+
+            q_-+ = -/+ k_F + sqrt(k_F^2 + 2 omega)
+
+        For q in [q_-, q_+] the Fermi-sphere disk of Eq. (18) is non-empty and
+        a single-electron excitation is kinematically allowed.  For q < q_- the
+        loss is a plasmon (the plasmon dispersion line terminates at q_-).
+        """
+        wh = max(float(omega), 0.0) / H2EV
+        kF = self.k_fermi_feg
+        root = math.sqrt(kF * kF + 2.0 * wh)
+        return root - kF, root + kF
+
     def qlog_bounds(self, E_s, omega):
         """
         Relativistic momentum-transfer bounds in log(q / a0^-1).
@@ -977,13 +1063,10 @@ class Electron:
             self._reflect()
             return False
 
-        if self.cfg.barrier_model == "quantum":
-            # Step-barrier transmission, T = 4 k1z k2z / (k1z + k2z)^2
-            root = math.sqrt(1.0 - self.Ui / E_perp)
-            T = 4.0 * root / ((1.0 + root) ** 2)
-            if self.rng.random() >= T:
-                self._reflect()
-                return False
+        T = barrier_transmission(E_perp, self.Ui, self.cfg)
+        if T < 1.0 and self.rng.random() >= T:
+            self._reflect()
+            return False
 
         Ev = Es - self.Ui
         # Parallel momentum is conserved; E_perp > U_i already guarantees a
@@ -1052,6 +1135,18 @@ class Electron:
         q, k, kp = qres
 
         diag["inelastic_events"] += 1
+
+        # Mao Eq. (9): the SE MECHANISM is decided by where (omega, q) sits
+        # relative to the single-electron-excitation window, NOT by which
+        # table the pair happened to be drawn from.  The transport (energy
+        # loss, deflection) is unaffected because the tables sum to the total;
+        # only the secondary-electron construction changes.
+        if self.cfg.se_channel_rule == "mao":
+            q_minus, q_plus = smp.mao_q_boundaries(omega)
+            mech = "se" if (q_minus <= q <= q_plus) else "pl"
+            if mech != ch:
+                diag["channel_reclassified"] += 1
+            ch = mech
 
         # --- projectile deflection (relativistic momenta, same as the bounds)
         cos_theta_p = (k * k + kp * kp - q * q) / (2.0 * k * kp)
@@ -1588,11 +1683,7 @@ def check_escape_probability(sample: Sample, E_s, n=200_000, seed=3):
     Eperp = E_s * mu * mu
     T = np.zeros_like(mu)
     ok = Eperp > sample.Ui
-    if sample.cfg.barrier_model == "quantum":
-        root = np.sqrt(1.0 - sample.Ui / Eperp[ok])
-        T[ok] = 4.0 * root / (1.0 + root) ** 2
-    else:
-        T[ok] = 1.0
+    T[ok] = [barrier_transmission(e, sample.Ui, sample.cfg) for e in Eperp[ok]]
     integ = np.trapezoid(T, mu) if hasattr(np, "trapezoid") else np.trapz(T, mu)
     analytic = 0.5 * integ
 
@@ -1693,3 +1784,113 @@ def run_all_checks(sample: Sample, energies=(50.0, 200.0, 1000.0), verbose=True)
             print(f"  energy closure error        : {res['kinematics']['max_energy_closure_error']:.2e}")
             print()
     return out
+
+
+def check_channel_boundaries(sample: Sample, omegas=None, threshold=1e-3):
+    """
+    (v) Are the DB's channel-resolved ELFs consistent with the Fermi energy
+    the DB reports?
+
+    Mao et al. 2008 Eq. (9) puts single-electron excitation in
+    q- <= q <= q+ with q_-+ = -/+ k_F + sqrt(k_F^2 + 2 omega).  That window is
+    exactly where the Fermi-sphere disk of Eq. (18) is non-empty, so:
+
+      * elf_se strength at q < q-  ->  losses with NO available target state.
+        Under se_channel_rule='table' those become dropped or fallback
+        secondaries; they are really plasmon losses that the FPA decomposition
+        assigned to the single-particle channel because it integrates over a
+        scanning omega_p whose k_F(omega_p) exceeds the material's k_F.
+      * elf_pl strength at q > q-  ->  the mirror image.
+
+    This routine measures the actual support of each channel table and inverts
+    the boundary to recover the k_F that the tables were built with:
+
+        from the lower edge of elf_se:  k_F = (2 omega - q-^2) / (2 q-)
+        from the upper edge of elf_se:  k_F = (q+^2 - 2 omega) / (2 q+)
+
+    A k_F_eff that is consistent across omega but differs from the DB's
+    sqrt(2 E_F) tells you exactly which value to put in
+    MCConfig.feg_fermi_energy -- or, better, that you should use
+    se_channel_rule='mao' and stop relying on the split.
+    """
+    q = np.exp(sample._qlog_grid)                     # a0^-1
+    w_grid = sample._omega_h_grid * H2EV              # eV
+    if omegas is None:
+        lo = max(float(w_grid[0]), 1.0)
+        hi = min(float(w_grid[-1]), 200.0)
+        omegas = np.geomspace(lo, hi, 12)
+
+    kF_db = sample.k_fermi_feg
+    rows = []
+    for w in omegas:
+        j = int(np.argmin(np.abs(w_grid - w)))
+        se = np.asarray(sample._elf_spl["se"].ev(
+            np.full_like(q, w_grid[j] / H2EV), sample._qlog_grid), float)
+        pl = np.asarray(sample._elf_spl["pl"].ev(
+            np.full_like(q, w_grid[j] / H2EV), sample._qlog_grid), float)
+        se = np.clip(np.nan_to_num(se), 0.0, None)
+        pl = np.clip(np.nan_to_num(pl), 0.0, None)
+
+        qm_th, qp_th = sample.mao_q_boundaries(w_grid[j])
+
+        row = {"omega": float(w_grid[j]), "q_minus_theory": qm_th,
+               "q_plus_theory": qp_th, "kF_db": kF_db}
+
+        if se.max() > 0:
+            sup = q[se > threshold * se.max()]
+            qlo, qhi = float(sup[0]), float(sup[-1])
+            wh = w_grid[j] / H2EV
+            row["se_q_lo"] = qlo
+            row["se_q_hi"] = qhi
+            row["kF_from_lower_edge"] = (2 * wh - qlo * qlo) / (2 * qlo)
+            row["kF_from_upper_edge"] = (qhi * qhi - 2 * wh) / (2 * qhi)
+            below = q < qm_th
+            trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+            tot = trapz(se, np.log(q))
+            row["se_frac_below_qminus"] = (
+                float(trapz(se[below], np.log(q[below])) / tot)
+                if below.sum() > 1 and tot > 0 else 0.0
+            )
+        if pl.max() > 0:
+            trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+            above = q > qm_th
+            tot = trapz(pl, np.log(q))
+            row["pl_frac_above_qminus"] = (
+                float(trapz(pl[above], np.log(q[above])) / tot)
+                if above.sum() > 1 and tot > 0 else 0.0
+            )
+        rows.append(row)
+    return rows
+
+
+def report_channel_boundaries(sample: Sample, **kw):
+    rows = check_channel_boundaries(sample, **kw)
+    kF_db = sample.k_fermi_feg
+    print(f"Channel-boundary check for {sample.name}")
+    print(f"  DB e_fermi = {sample.e_fermi_feg:.3f} eV  ->  k_F = {kF_db:.4f} a0^-1")
+    print(f"  {'omega':>8} {'q-(th)':>8} {'se_q_lo':>8} {'kF(lo)':>8} "
+          f"{'kF(hi)':>8} {'se<q-':>7} {'pl>q-':>7}")
+    kfs = []
+    for r in rows:
+        lo = r.get("se_q_lo", float("nan"))
+        klo = r.get("kF_from_lower_edge", float("nan"))
+        khi = r.get("kF_from_upper_edge", float("nan"))
+        fb = r.get("se_frac_below_qminus", 0.0)
+        fa = r.get("pl_frac_above_qminus", 0.0)
+        if np.isfinite(klo) and klo > 0:
+            kfs.append(klo)
+        print(f"  {r['omega']:8.2f} {r['q_minus_theory']:8.4f} {lo:8.4f} "
+              f"{klo:8.4f} {khi:8.4f} {fb:7.1%} {fa:7.1%}")
+    if kfs:
+        kf_eff = float(np.median(kfs))
+        ef_eff = 0.5 * kf_eff ** 2 * H2EV
+        print(f"\n  Inferred k_F from elf_se support : {kf_eff:.4f} a0^-1 "
+              f"(E_F = {ef_eff:.2f} eV)")
+        print(f"  DB k_F                            : {kF_db:.4f} a0^-1 "
+              f"(E_F = {sample.e_fermi_feg:.2f} eV)")
+        if abs(kf_eff - kF_db) / max(kF_db, 1e-9) > 0.15:
+            print("\n  >>> The tables and the DB's e_fermi disagree. Either set\n"
+                  f"  >>>     MCConfig(feg_fermi_energy={ef_eff:.2f})\n"
+                  "  >>> or keep se_channel_rule='mao', which does not rely on\n"
+                  "  >>> the table split at all and cannot lose secondaries.")
+    return rows
