@@ -153,8 +153,32 @@ class ElsepaWrapper:
         self.mat.decs_theta = decs_theta
         self.mat.decs = decs_total / sumweights
 
-        norm_factor = np.trapz(self.mat.decs, self.mat.decs_theta, axis=0)
+        # Normalised DCS.  The solid-angle element is dOmega = 2 pi sin(theta) dtheta,
+        # so the normalising integral is
+        #       int 2 pi DCS(theta) sin(theta) dtheta
+        # NOT int DCS dtheta.  Without the sin(theta) Jacobian, norm_decs is not a
+        # probability density on the sphere: it over-weights forward and backward
+        # angles, where sin(theta) -> 0.
+        sin_theta = np.sin(self.mat.decs_theta)[:, None]
+        norm_factor = np.trapz(2.0 * np.pi * self.mat.decs * sin_theta,
+                               self.mat.decs_theta, axis=0)
         self.mat.norm_decs = self.mat.decs / np.where(norm_factor > 0, norm_factor, 1.0)
+
+        # The normalising integral IS the total elastic cross section, which was
+        # parsed independently from the ELSEPA header. Comparing them validates
+        # both the DCS column choice (data[:, 3] must be a0^2/sr) and the angular
+        # grid, and costs nothing.
+        with np.errstate(divide='ignore', invalid='ignore'):
+            rel_dev = np.abs(norm_factor / self.mat.sigma_el - 1.0)
+        rel_dev = rel_dev[np.isfinite(rel_dev)]
+        if rel_dev.size and np.max(rel_dev) > 0.02:
+            import warnings
+            warnings.warn(
+                f"Integrated DCS disagrees with the tabulated total elastic cross "
+                f"section by up to {np.max(rel_dev):.1%}. Check that data[:, 3] is "
+                f"the DCS in a0^2/sr and that the theta grid is complete.",
+                RuntimeWarning)
+        self.mat.sigma_el_from_dcs = norm_factor
 
         self.mat.e0_array = used_energy
         self.mat.original_e0_array = energy_array
