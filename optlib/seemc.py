@@ -197,6 +197,29 @@ class MCConfig:
     # --- elastic ---
     elastic_min_energy: float = 5.0      # ELSEPA tables clamped below this (eV, vacuum ref)
 
+    # How the elastic CROSS SECTION behaves below elastic_cutoff_energy, where
+    # ELSEPA's solid-state model is no longer reliable.  JMONSEL offers exactly
+    # these choices, and they matter: its own Cu variants differ by a factor
+    # 1.46 in SEY at 50 eV, which is larger than the disagreement between codes.
+    #
+    #  'elsepa'   : hold the ELSEPA value at the cutoff (seemc's old behaviour;
+    #               NOT one of JMONSEL's options, listed for comparison).
+    #  'browning' : below the cutoff, follow the energy dependence of Browning's
+    #               empirical form, normalised to the ELSEPA value at the cutoff:
+    #                   sigma(E) = sigma_ELSEPA(Ec) * sigma_B(E) / sigma_B(Ec)
+    #               (Browning et al., J. Appl. Phys. 76 (1994) 2016.)  This is
+    #               "extrapolated from ELSEPA using Browning's empirical form".
+    #  'linear'   : sigma = 0 at E_F, = sigma_ELSEPA(Ec) at the cutoff, linear
+    #               in between.
+    #
+    # NOTE: only the total cross section (hence the elastic MFP) is modified.
+    # The angular distribution is held at its cutoff value, since the reference
+    # description specifies cross sections only.  If JMONSEL also swaps the
+    # angular distribution below the cutoff, this will not reproduce it exactly.
+    elastic_low_energy_model: str = "elsepa"
+    elastic_cutoff_energy: float = 50.0   # eV, in the emfp table's own reference
+    atomic_number: Optional[float] = None  # needed by 'browning'; else from DB
+
     # --- surface barrier ---
     # 'abrupt'   : T = 4r/(1+r)^2, r = sqrt(1 - Ui/E_perp).  Abrupt step.
     #              ('quantum' is accepted as a synonym.)
@@ -307,6 +330,9 @@ class MCConfig:
             )
         if self.se_channel_rule not in ("mao", "table"):
             raise ValueError(f"bad se_channel_rule: {self.se_channel_rule}")
+        if self.elastic_low_energy_model not in ("elsepa", "browning", "linear"):
+            raise ValueError(
+                f"bad elastic_low_energy_model: {self.elastic_low_energy_model}")
         if self.on_pauli_block not in ("fallback", "drop"):
             raise ValueError(f"bad on_pauli_block: {self.on_pauli_block}")
 
@@ -447,6 +473,27 @@ def barrier_transmission(E_perp, Ui, cfg):
     return max(0.0, min(1.0, 1.0 - r * r))
 
 
+def browning_cross_section(E_ev, Z):
+    """
+    Browning's empirical total elastic cross section (Browning, Li, Chui, Ye,
+    Pease, Czyzewski & Joy, J. Appl. Phys. 76 (1994) 2016), in cm^2:
+
+        sigma(E) = 3.0e-18 Z^1.7 / (E + 0.005 Z^1.7 sqrt(E) + 0.0007 Z^2 / sqrt(E))
+
+    with E in keV.  Fitted for 0.1-30 keV, so using it below 100 eV really is
+    an extrapolation -- which is precisely how it is being used here.  Only the
+    RATIO to its value at the cutoff is used, so the absolute normalisation and
+    the Z^1.7 prefactor cancel; Z still enters through the denominator.
+
+    Note the low-energy limit: the 0.0007 Z^2 / sqrt(E) term dominates as
+    E -> 0, so sigma ~ sqrt(E) -> 0 and the elastic MFP diverges.
+    """
+    E = max(float(E_ev), 1e-9) / 1000.0
+    z17 = Z ** 1.7
+    rt = math.sqrt(E)
+    return 3.0e-18 * z17 / (E + 0.005 * z17 * rt + 0.0007 * Z * Z / rt)
+
+
 def _isotropic_direction(rng):
     cos_t = 2.0 * rng.random() - 1.0
     sin_t = math.sqrt(max(1.0 - cos_t * cos_t, 0.0))
@@ -577,6 +624,25 @@ class Sample:
         )
         self.k_fermi_feg = math.sqrt(max(2.0 * self.e_fermi_feg / H2EV, 0.0))
 
+        self.Z_eff = self.cfg.atomic_number
+        if self.Z_eff is None:
+            for key in ("atomic_number", "Z", "z", "mean_atomic_number"):
+                if key in md:
+                    self.Z_eff = float(np.mean(np.asarray(md[key], float)))
+                    break
+        if self.Z_eff is None and "composition" in md:
+            comp = md["composition"]
+            zs = getattr(comp, "atomic_numbers", None)
+            ws = getattr(comp, "indices", None)
+            if zs is not None and ws is not None:
+                self.Z_eff = float(np.average(np.asarray(zs, float),
+                                              weights=np.asarray(ws, float)))
+        if self.cfg.elastic_low_energy_model == "browning" and self.Z_eff is None:
+            raise ValueError(
+                "elastic_low_energy_model='browning' needs the atomic number; "
+                "no Z found in the database, so set MCConfig(atomic_number=...)"
+            )
+
         self.imfp_table = np.asarray(md["imfp"], dtype=float)
         self.emfp_table = np.asarray(md["emfp"], dtype=float)
         # Interpolate the inverse MFPs directly: they are what the transport
@@ -693,18 +759,51 @@ class Sample:
     # ------------------------------------------------------------------
     # Mean free paths
     # ------------------------------------------------------------------
+    def elastic_sigma_scale(self, E_s):
+        """
+        Multiplier on the elastic cross section relative to its value at the
+        cutoff. Returns 1.0 at and above the cutoff.
+        """
+        m = self.cfg.elastic_low_energy_model
+        Ec = self.cfg.elastic_cutoff_energy
+        if m == "elsepa" or E_s >= Ec:
+            return 1.0
+        if m == "linear":
+            EF = self.e_fermi
+            if E_s <= EF:
+                return 0.0
+            return (E_s - EF) / max(Ec - EF, 1e-9)
+        return (browning_cross_section(E_s, self.Z_eff)
+                / browning_cross_section(Ec, self.Z_eff))
+
     def get_imfp(self, E_s):
         E = self._clip_E(self._imfp_abscissa(E_s))
         return float(np.interp(E, self.Egrid, self.imfp_table))
 
     def get_emfp(self, E_s):
-        E = self._clip_E(self._emfp_abscissa(E_s))
-        return float(np.interp(E, self.Egrid, self.emfp_table))
+        m = self.cfg.elastic_low_energy_model
+        Ec = self.cfg.elastic_cutoff_energy
+        if m == "elsepa" or E_s >= Ec:
+            E = self._clip_E(self._emfp_abscissa(E_s))
+            return float(np.interp(E, self.Egrid, self.emfp_table))
+        # Anchor on the ELSEPA value AT the cutoff, then rescale the cross
+        # section (EMFP scales as 1/sigma).
+        E = self._clip_E(self._emfp_abscissa(Ec))
+        emfp_c = float(np.interp(E, self.Egrid, self.emfp_table))
+        f = self.elastic_sigma_scale(E_s)
+        return emfp_c / f if f > 0 else float("inf")
 
     def inverse_mfps(self, E_s):
         """(1/emfp, 1/imfp) at E_s.  Evaluated once per transport step."""
-        inv_e = float(np.interp(self._clip_E(self._emfp_abscissa(E_s)),
-                                self.Egrid, self.inv_emfp_table))
+        m = self.cfg.elastic_low_energy_model
+        Ec = self.cfg.elastic_cutoff_energy
+        if m == "elsepa" or E_s >= Ec:
+            inv_e = float(np.interp(self._clip_E(self._emfp_abscissa(E_s)),
+                                    self.Egrid, self.inv_emfp_table))
+        else:
+            inv_e = float(np.interp(self._clip_E(self._emfp_abscissa(Ec)),
+                                    self.Egrid, self.inv_emfp_table)
+                          ) * self.elastic_sigma_scale(E_s)
         if self.is_metal and E_s <= self.e_fermi:
             inv_i = 0.0            # no inelastic channel below E_F
         else:
@@ -760,8 +859,16 @@ class Sample:
         return float(trapz(pdf * np.cos(th), th) / norm) if norm > 0 else 0.0
 
     def sample_elastic_theta(self, E_s, rng):
-        """Sample the elastic polar deflection, interpolating between energy bins."""
-        i, t = _bin_and_fraction(self.Egrid, self._clip_E(self._emfp_abscissa(E_s)))
+        """
+        Sample the elastic polar deflection, interpolating between energy bins.
+
+        Below elastic_cutoff_energy the DCS shape is held at its cutoff value:
+        the low-energy models redefine the total cross section only.
+        """
+        E_look = E_s
+        if self.cfg.elastic_low_energy_model != "elsepa":
+            E_look = max(E_s, self.cfg.elastic_cutoff_energy)
+        i, t = _bin_and_fraction(self.Egrid, self._clip_E(self._emfp_abscissa(E_look)))
         j = i + 1 if (t > 0.0 and rng.random() < t) else i
         return _invert_cdf(self._elastic_cdf[:, j], self._elastic_theta, rng.random())
 
