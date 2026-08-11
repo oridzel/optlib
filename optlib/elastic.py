@@ -160,7 +160,7 @@ class ElsepaWrapper:
         # probability density on the sphere: it over-weights forward and backward
         # angles, where sin(theta) -> 0.
         sin_theta = np.sin(self.mat.decs_theta)[:, None]
-        norm_factor = np.trapz(2.0 * np.pi * self.mat.decs * sin_theta,
+        norm_factor = np.trapezoid(2.0 * np.pi * self.mat.decs * sin_theta,
                                self.mat.decs_theta, axis=0)
         self.mat.norm_decs = self.mat.decs / np.where(norm_factor > 0, norm_factor, 1.0)
 
