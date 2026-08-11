@@ -264,6 +264,8 @@ class FPAEngine:
         self.qlog_grid = None
         self.se_spl = None
         self.pl_spl = None
+        self.elf_se_map = None
+        self.elf_pl_map = None
 
     def build_elf_maps(self, qmax=45.0, qsplit=2.7, omega_pl_max=30000, n_log=260, chunk_pl=1024):
         """Builds the (omega, qlog) interpolators using parallel execution."""
@@ -289,16 +291,16 @@ class FPAEngine:
         )
 
         Nw = self.mat.eloss.size
-        elf_se_map = np.zeros((Nw, Nq), dtype=np.float64)
-        elf_pl_map = np.zeros((Nw, Nq), dtype=np.float64)
+        self.elf_se_map = np.zeros((Nw, Nq), dtype=np.float64)
+        self.elf_pl_map = np.zeros((Nw, Nq), dtype=np.float64)
 
         for k0, k1, se_blk, pl_blk in results:
-            elf_se_map[:, k0:k1] = se_blk
-            elf_pl_map[:, k0:k1] = pl_blk
+            self.elf_se_map[:, k0:k1] = se_blk
+            self.elf_pl_map[:, k0:k1] = pl_blk
 
         self.qlog_grid = np.log(q_grid)
-        self.se_spl = RectBivariateSpline(self.mat.eloss, self.qlog_grid, elf_se_map, kx=1, ky=1)
-        self.pl_spl = RectBivariateSpline(self.mat.eloss, self.qlog_grid, elf_pl_map, kx=1, ky=1)
+        self.se_spl = RectBivariateSpline(self.mat.eloss, self.qlog_grid, self.elf_se_map, kx=1, ky=1)
+        self.pl_spl = RectBivariateSpline(self.mat.eloss, self.qlog_grid, self.elf_pl_map, kx=1, ky=1)
         
         print(f"FPA maps built successfully in {time.time()-t0:.2f}s")
 
