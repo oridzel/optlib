@@ -273,8 +273,8 @@ class FPAEngine:
         t0 = time.time()
         
         # Build grids
-        q_grid = self._make_q_grid_hybrid_a0inv(qmax, qsplit, n_log=n_log)
-        omega_pl_eV = self._make_omega_pl_grid_fast(omega_pl_max)
+        self.q_grid = self._make_q_grid_hybrid_a0inv(qmax, qsplit, n_log=n_log)
+        self.omega_pl_eV = self._make_omega_pl_grid_fast(omega_pl_max)
         
         Nq = q_grid.size
         q_block = 64
