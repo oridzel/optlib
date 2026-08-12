@@ -276,14 +276,14 @@ class FPAEngine:
         self.q_grid = self._make_q_grid_hybrid_a0inv(qmax, qsplit, n_log=n_log)
         self.omega_pl_eV = self._make_omega_pl_grid_fast(omega_pl_max)
         
-        Nq = q_grid.size
+        Nq = self.q_grid.size
         q_block = 64
         tasks = [(k0, min(k0 + q_block, Nq)) for k0 in range(0, Nq, q_block)]
 
         results = Parallel(n_jobs=self.n_jobs, prefer="processes")(
             delayed(_elf_qblock_worker)(
                 k0, k1,
-                self.mat.eloss, q_grid, omega_pl_eV, 
+                self.mat.eloss, self.q_grid, self.omega_pl_eV, 
                 self.mat.optical_eloss, self.mat.optical_elf,
                 chunk_pl, 1e-14
             )
@@ -298,7 +298,7 @@ class FPAEngine:
             self.elf_se_map[:, k0:k1] = se_blk
             self.elf_pl_map[:, k0:k1] = pl_blk
 
-        self.qlog_grid = np.log(q_grid)
+        self.qlog_grid = np.log(self.q_grid)
         self.se_spl = RectBivariateSpline(self.mat.eloss, self.qlog_grid, self.elf_se_map, kx=1, ky=1)
         self.pl_spl = RectBivariateSpline(self.mat.eloss, self.qlog_grid, self.elf_pl_map, kx=1, ky=1)
         
