@@ -5,6 +5,10 @@ from scipy.interpolate import interp1d, RectBivariateSpline
 from joblib import Parallel, delayed
 from optlib.constants import h2ev, a0
 
+_np_trapezoid = getattr(np, "trapezoid", None)
+if _np_trapezoid is None:
+    _np_trapezoid = np.trapz
+
 # =====================================================================
 # 1. STANDALONE LINDHARD MATH & WORKERS (Required for Joblib parallelization)
 # =====================================================================
@@ -182,11 +186,11 @@ def _elf_qblock_worker(k0, k1, omega_eV_grid, q_grid_a0inv, omega_pl_eV, opt_ome
             se_chunk = np.nan_to_num(se_chunk, nan=0.0, posinf=0.0, neginf=0.0)
 
             if boundary_se is None:
-                se_acc += np.trapezoid(se_chunk, wpl_chunk, axis=2)
+                se_acc += _np_trapezoid(se_chunk, wpl_chunk, axis=2)
             else:
                 w_cat = np.concatenate(([boundary_wpl], wpl_chunk))
                 se_cat = np.concatenate((boundary_se[:, :, None], se_chunk), axis=2)
-                se_acc += np.trapezoid(se_cat, w_cat, axis=2)
+                se_acc += _np_trapezoid(se_cat, w_cat, axis=2)
 
             eps_real_chunk = eps_chunk.real.reshape(M, Nc)
             if boundary_eps is None:
@@ -349,8 +353,8 @@ class FPAEngine:
         rel = ((1 + e0/(c**2))**2) / (1 + e0/(2*c**2))
         pref = rel * 1.0 / (math.pi * e0)
 
-        iimfp_se_ok = pref * np.trapezoid(elf_se, qlog_mat, axis=1)
-        iimfp_pl_ok = pref * np.trapezoid(elf_pl, qlog_mat, axis=1)
+        iimfp_se_ok = pref * _np_trapezoid(elf_se, qlog_mat, axis=1)
+        iimfp_pl_ok = pref * _np_trapezoid(elf_pl, qlog_mat, axis=1)
         iimfp_tot_ok = iimfp_se_ok + iimfp_pl_ok
 
         diimfp_se = np.zeros_like(self.mat.eloss, dtype=float)
