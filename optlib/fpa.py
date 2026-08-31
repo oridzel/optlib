@@ -369,9 +369,40 @@ class FPAEngine:
 
     # --- Grid Generators ---
     def _make_q_grid_hybrid_a0inv(self, qmax, qsplit, dq_low=0.01, n_log=260):
-        q1 = np.arange(0.01, qsplit + 0.5*dq_low, dq_low)
-        q2 = np.geomspace(qsplit, qmax, n_log) if qmax > qsplit else np.array([], float)
-        return np.unique(np.concatenate([q1, q2]))
+        q1 = np.arange(
+            0.01,
+            qsplit + 0.5 * dq_low,
+            dq_low,
+            dtype=np.float64,
+        )
+
+        # Let the logarithmic branch own qsplit. np.arange can produce an
+        # endpoint infinitesimally below qsplit (e.g. 2.6999999999999997),
+        # which np.unique does not consider equal to the exact qsplit from
+        # np.geomspace. After later conversions those two values can collapse
+        # to the same spline coordinate and violate strict monotonicity.
+        q1 = q1[
+            (q1 < qsplit)
+            & (~np.isclose(q1, qsplit, rtol=1e-12, atol=1e-14))
+        ]
+
+        if qmax > qsplit:
+            q2 = np.geomspace(
+                qsplit,
+                qmax,
+                n_log,
+                dtype=np.float64,
+            )
+            q = np.concatenate([q1, q2])
+        else:
+            q = q1[q1 <= qmax]
+
+        # The spline coordinate must be strictly increasing. Fail here with a
+        # clear error rather than later inside RectBivariateSpline.
+        if np.any(np.diff(q) <= 0.0):
+            raise ValueError("Generated q grid is not strictly increasing")
+
+        return q
 
     def _make_omega_pl_grid_fast(self, max_eV, split_eV=100.0, d_low=0.02, n_log=3000):
         w1 = np.arange(1e-5, split_eV, d_low)
