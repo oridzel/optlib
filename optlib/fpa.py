@@ -257,14 +257,26 @@ def _elf_qblock_worker(k0, k1, omega_eV_grid, q_grid_a0inv, omega_pl_eV, opt_ome
 # =====================================================================
 
 class FPAEngine:
-    def __init__(self, material, n_jobs=-1):
+    def __init__(self, material, n_jobs=-1, *, backend="numpy", arch="cpu", cpu_threads=None):
         """
         Initializes the Full Penn Algorithm engine.
         material: An optlib Material instance (must have .eloss and .elf defined).
         n_jobs: Number of CPU cores to use for parallel map building (-1 means all cores).
+        backend: "numpy" (existing Joblib worker) or "taichi" (fused float64 worker).
+        arch: "cpu" or "cuda" for Taichi. CUDA availability is checked explicitly.
+        cpu_threads: Optional Taichi CPU thread count; default respects n_jobs,
+            CPU affinity/quota and SLURM_CPUS_PER_TASK. No Taichi Joblib processes.
         """
         self.mat = material
         self.n_jobs = n_jobs
+        if backend not in {"numpy", "taichi"}:
+            raise ValueError("backend must be 'numpy' or 'taichi'")
+        if arch not in {"cpu", "cuda"}:
+            raise ValueError("arch must be 'cpu' or 'cuda'")
+        self.backend = backend
+        self.arch = arch
+        self.cpu_threads = cpu_threads
+        self.last_build_info = None
         self.qlog_grid = None
         self.se_spl = None
         self.pl_spl = None
@@ -273,13 +285,30 @@ class FPAEngine:
 
     def build_elf_maps(self, qmax=45.0, qsplit=2.7, omega_pl_max=30000, n_log=260, chunk_pl=1024):
         """Builds the (omega, qlog) interpolators using parallel execution."""
-        print("Building FPA ELF Maps... This may take a moment.")
+        print(f"Building FPA ELF Maps ({self.backend}, float64)...")
         t0 = time.time()
         
         # Build grids
         self.q_grid = self._make_q_grid_hybrid_a0inv(qmax, qsplit, n_log=n_log)
         self.omega_pl_eV = self._make_omega_pl_grid_fast(omega_pl_max)
         
+        if self.backend == "taichi":
+            if __package__:
+                from .fpa_taichi import compute_elf_maps
+            else:
+                from fpa_taichi import compute_elf_maps
+            g_wpl = g_arr(self.omega_pl_eV / h2ev,
+                         self.mat.optical_eloss, self.mat.optical_elf)
+            self.elf_se_map, self.elf_pl_map, self.last_build_info = compute_elf_maps(
+                self.mat.eloss, self.q_grid, self.omega_pl_eV, g_wpl,
+                h2ev=h2ev, arch=self.arch, n_jobs=self.n_jobs,
+                cpu_threads=self.cpu_threads, chunk_pl=chunk_pl,
+            )
+            self._finish_maps()
+            self.last_build_info["build_seconds"] = time.time() - t0
+            print(f"FPA maps built successfully in {time.time()-t0:.2f}s")
+            return
+
         Nq = self.q_grid.size
         q_block = 64
         tasks = [(k0, min(k0 + q_block, Nq)) for k0 in range(0, Nq, q_block)]
@@ -302,11 +331,16 @@ class FPAEngine:
             self.elf_se_map[:, k0:k1] = se_blk
             self.elf_pl_map[:, k0:k1] = pl_blk
 
+        self._finish_maps()
+        self.last_build_info = {"backend": "numpy", "precision": "float64",
+                                "build_seconds": time.time() - t0}
+        
+        print(f"FPA maps built successfully in {time.time()-t0:.2f}s")
+
+    def _finish_maps(self):
         self.qlog_grid = np.log(self.q_grid)
         self.se_spl = RectBivariateSpline(self.mat.eloss, self.qlog_grid, self.elf_se_map, kx=1, ky=1)
         self.pl_spl = RectBivariateSpline(self.mat.eloss, self.qlog_grid, self.elf_pl_map, kx=1, ky=1)
-        
-        print(f"FPA maps built successfully in {time.time()-t0:.2f}s")
 
     def calculate_diimfp(self, E_eV, nq=100):
         """
@@ -325,7 +359,7 @@ class FPAEngine:
 
         if not np.any(ok_w):
             z = np.zeros_like(self.mat.eloss, dtype=float)
-            return z, z, z, z, z, z
+            return z, z.copy(), z.copy()
 
         omega_ok = self.mat.eloss[ok_w]
         om = omega_ok / h2ev
